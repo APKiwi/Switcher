@@ -19,12 +19,26 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
     private var isAllowedToMouseHover = false
     private var mouseMonitor: Any?
 
-    private let itemSize: CGFloat = 76
+    // Recomputed per show based on the target screen (see iconSize(for:)).
+    private var itemSize: CGFloat = 76
     private let itemSpacing: CGFloat = 0
     private let rowSpacing: CGFloat = 4
     private let panelPadding: CGFloat = 10
     private let deadZoneThreshold: CGFloat = 3
     private let screenMarginPercent: CGFloat = 0.85  // Use max 85% of screen width
+
+    // Icon scaling: base size on a reference-height display, scaled up for
+    // larger monitors so icons stay legible. Floored at the base so laptops
+    // and standard displays never shrink; capped so it can't get absurd.
+    private let baseItemSize: CGFloat = 76
+    private let maxItemSize: CGFloat = 160
+    private let referenceScreenHeight: CGFloat = 1080
+
+    /// Item/icon size scaled to the given screen's point height.
+    private func iconSize(for screen: NSScreen) -> CGFloat {
+        let scaled = baseItemSize * (screen.frame.height / referenceScreenHeight)
+        return min(max(scaled, baseItemSize), maxItemSize)
+    }
 
     init() {
         super.init(
@@ -121,6 +135,9 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         let targetScreen = NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens.first!
         let screenFrame = targetScreen.visibleFrame
 
+        // Scale icon size to this screen (bigger monitors get bigger icons)
+        itemSize = iconSize(for: targetScreen)
+
         // Calculate max items per row based on screen width
         let maxPanelWidth = screenFrame.width * screenMarginPercent
         let availableWidth = maxPanelWidth - panelPadding * 2
@@ -131,7 +148,7 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         var currentRowStackView = createRowStackView()
 
         for (index, app) in apps.enumerated() {
-            let itemView = AppItemView(appInfo: app)
+            let itemView = AppItemView(appInfo: app, itemSize: itemSize)
             itemView.delegate = self
             appViews.append(itemView)
             currentRow.append(itemView)

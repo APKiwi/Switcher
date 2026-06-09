@@ -13,11 +13,13 @@ class AppItemView: NSView {
     private var badgeLabel: NSTextField?
     private var isSelected = false
 
-    private let itemSize: CGFloat = 76
-    private let iconSize: CGFloat = 76
+    private let itemSize: CGFloat
+    private let iconSize: CGFloat
 
-    init(appInfo: AppInfo) {
+    init(appInfo: AppInfo, itemSize: CGFloat = 76) {
         self.appInfo = appInfo
+        self.itemSize = itemSize
+        self.iconSize = itemSize
 
         // Create icon view
         iconImageView = NSImageView()
@@ -64,8 +66,8 @@ class AppItemView: NSView {
     private func setupBadge() {
         guard let badgeText = appInfo.badge else { return }
 
-        // Create badge background (red circle)
-        let badgeSize: CGFloat = 20
+        // Create badge background (red circle), scaled to icon size
+        let badgeSize: CGFloat = max(20, itemSize * 0.26)
         let badgeContainer = NSView()
         badgeContainer.wantsLayer = true
         badgeContainer.layer?.backgroundColor = NSColor.systemRed.cgColor
@@ -76,7 +78,7 @@ class AppItemView: NSView {
 
         // Create badge label
         let label = NSTextField(labelWithString: formatBadge(badgeText))
-        label.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        label.font = NSFont.systemFont(ofSize: max(11, itemSize * 0.145), weight: .bold)
         label.textColor = .white
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
