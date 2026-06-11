@@ -53,6 +53,9 @@ class PreferencesWindowController: NSWindowController {
         let donateButton = NSButton(title: "❤️ Donate", target: self, action: #selector(donate))
         donateButton.bezelStyle = .rounded
 
+        let quitButton = NSButton(title: "Quit Switcher", target: self, action: #selector(quit))
+        quitButton.bezelStyle = .rounded
+
         let versionLabel = NSTextField(labelWithString: versionString())
         versionLabel.font = .systemFont(ofSize: 11)
         versionLabel.textColor = .secondaryLabelColor
@@ -62,6 +65,7 @@ class PreferencesWindowController: NSWindowController {
             menuBarCheckbox,
             grayscaleCheckbox,
             donateButton,
+            quitButton,
             versionLabel
         ])
         stack.orientation = .vertical
@@ -120,5 +124,12 @@ class PreferencesWindowController: NSWindowController {
 
     @objc private func donate() {
         Preferences.openDonatePage()
+    }
+
+    @objc private func quit() {
+        // Close the window first, then terminate. `applicationWillTerminate`
+        // restores the native Cmd+Tab hotkey on the way out.
+        window?.close()
+        NSApp.terminate(nil)
     }
 }
