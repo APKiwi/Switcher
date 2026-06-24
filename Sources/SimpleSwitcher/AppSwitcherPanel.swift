@@ -260,6 +260,11 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         }
     }
 
+    /// App under the current mouse position, independent of dead-zone hover state.
+    func getAppUnderMouse() -> AppInfo? {
+        return getAppAtPoint(mouseLocationOutsideOfEventStream)
+    }
+
     func getAppAtPoint(_ windowPoint: NSPoint) -> AppInfo? {
         for row in rows {
             for view in row {

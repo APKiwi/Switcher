@@ -153,8 +153,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
         let mouseLocation = NSEvent.mouseLocation
 
         if panel.frame.contains(mouseLocation) {
-            // Click inside panel - activate selected app
-            if let selectedApp = panel.getSelectedApp() {
+            // Activate the app under the cursor — a click is deliberate, so it
+            // ignores dead-zone hover state. Fall back to the keyboard selection
+            // only if the click missed all icons (gap/padding inside the panel).
+            if let clickedApp = panel.getAppUnderMouse() {
+                activateApp(clickedApp)
+            } else if let selectedApp = panel.getSelectedApp() {
                 activateApp(selectedApp)
             }
         }
