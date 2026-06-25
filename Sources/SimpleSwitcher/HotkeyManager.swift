@@ -19,6 +19,7 @@ class HotkeyManager {
     private var hotKeyPressedHandler: EventHandlerRef?
     private var tabHotKeyRef: EventHotKeyRef?
     private var tabOptionHotKeyRef: EventHotKeyRef?
+    private var graveOptionHotKeyRef: EventHotKeyRef?
     private var activeHotKeyRefs: [EventHotKeyRef?] = []
     private var eventTap: CFMachPort?
 
@@ -82,6 +83,7 @@ class HotkeyManager {
         case upArrow = 8    // Cmd+Up - previous row
         case downArrow = 9  // Cmd+Down - next row
         case tabOption = 10 // Option+Tab - activate/next (parallel trigger)
+        case graveOption = 11 // Option+backtick -> native Cmd+backtick (cycle app windows)
     }
 
     // Map hotkey IDs to key codes for delegate
@@ -123,6 +125,10 @@ class HotkeyManager {
         if let ref = tabOptionHotKeyRef {
             UnregisterEventHotKey(ref)
             tabOptionHotKeyRef = nil
+        }
+        if let ref = graveOptionHotKeyRef {
+            UnregisterEventHotKey(ref)
+            graveOptionHotKeyRef = nil
         }
 
         // Unregister active hotkeys
@@ -270,6 +276,12 @@ class HotkeyManager {
                     DispatchQueue.main.async {
                         manager.delegate?.hotkeyTriggered()
                     }
+                } else if id.id == HotkeyID.graveOption.rawValue {
+                    // Option+backtick: fire a synthetic Cmd+backtick so macOS cycles
+                    // the frontmost app's windows (its native behaviour for that key).
+                    DispatchQueue.main.async {
+                        manager.sendBacktickWindowCycle()
+                    }
                 } else {
                     // Other hotkeys (H, Q, arrows, etc.) - only registered when active
                     if let keyCode = HotkeyManager.hotkeyToKeyCode[id.id] {
@@ -292,6 +304,28 @@ class HotkeyManager {
 
         let optionID = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.tabOption.rawValue)
         RegisterEventHotKey(UInt32(kVK_Tab), UInt32(optionKey), optionID, eventTarget, UInt32(kEventHotKeyNoOptions), &tabOptionHotKeyRef)
+
+        // Option+backtick mirrors Cmd+backtick (macOS "cycle the front app's windows").
+        let graveID = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.graveOption.rawValue)
+        RegisterEventHotKey(UInt32(kVK_ANSI_Grave), UInt32(optionKey), graveID, eventTarget, UInt32(kEventHotKeyNoOptions), &graveOptionHotKeyRef)
+    }
+
+    /// Fire a synthetic Cmd+backtick so macOS runs its built-in "cycle windows of
+    /// the frontmost app" shortcut. Bound to Option+backtick. Cmd+backtick is not a
+    /// Switcher hotkey; this just lets the Option key drive the same native action,
+    /// the way Option+Tab drives Cmd+Tab. Flags are set explicitly to Command only,
+    /// so the physically-held Option key does not leak into the synthetic event.
+    private func sendBacktickWindowCycle() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let grave = CGKeyCode(kVK_ANSI_Grave)
+        if let down = CGEvent(keyboardEventSource: source, virtualKey: grave, keyDown: true) {
+            down.flags = .maskCommand
+            down.post(tap: .cghidEventTap)
+        }
+        if let up = CGEvent(keyboardEventSource: source, virtualKey: grave, keyDown: false) {
+            up.flags = .maskCommand
+            up.post(tap: .cghidEventTap)
+        }
     }
 
     // MARK: - Event Tap (for modifier release and mouse clicks only)
