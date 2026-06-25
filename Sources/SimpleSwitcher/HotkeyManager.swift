@@ -1,5 +1,6 @@
 import Cocoa
 import Carbon
+import ApplicationServices
 
 protocol HotkeyManagerDelegate: AnyObject {
     func hotkeyTriggered()
@@ -277,10 +278,10 @@ class HotkeyManager {
                         manager.delegate?.hotkeyTriggered()
                     }
                 } else if id.id == HotkeyID.graveOption.rawValue {
-                    // Option+backtick: fire a synthetic Cmd+backtick so macOS cycles
-                    // the frontmost app's windows (its native behaviour for that key).
+                    // Option+backtick: cycle the frontmost app's windows, mirroring
+                    // the native Cmd+backtick behaviour.
                     DispatchQueue.main.async {
-                        manager.sendBacktickWindowCycle()
+                        manager.cycleFrontmostAppWindows()
                     }
                 } else {
                     // Other hotkeys (H, Q, arrows, etc.) - only registered when active
@@ -310,22 +311,31 @@ class HotkeyManager {
         RegisterEventHotKey(UInt32(kVK_ANSI_Grave), UInt32(optionKey), graveID, eventTarget, UInt32(kEventHotKeyNoOptions), &graveOptionHotKeyRef)
     }
 
-    /// Fire a synthetic Cmd+backtick so macOS runs its built-in "cycle windows of
-    /// the frontmost app" shortcut. Bound to Option+backtick. Cmd+backtick is not a
-    /// Switcher hotkey; this just lets the Option key drive the same native action,
-    /// the way Option+Tab drives Cmd+Tab. Flags are set explicitly to Command only,
-    /// so the physically-held Option key does not leak into the synthetic event.
-    private func sendBacktickWindowCycle() {
-        let source = CGEventSource(stateID: .combinedSessionState)
-        let grave = CGKeyCode(kVK_ANSI_Grave)
-        if let down = CGEvent(keyboardEventSource: source, virtualKey: grave, keyDown: true) {
-            down.flags = .maskCommand
-            down.post(tap: .cghidEventTap)
+    /// Cycle to another window of the frontmost app, mirroring macOS's native
+    /// Cmd+backtick. Bound to Option+backtick. Done through the Accessibility API
+    /// (raise the backmost window) instead of synthesizing a Cmd+backtick keystroke,
+    /// because the physically-held Option key leaks into a synthetic event and stops
+    /// the system shortcut from matching.
+    private func cycleFrontmostAppWindows() {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return }
+        // Skip minimized windows, the way Cmd+backtick does.
+        let visible = windows.filter { window in
+            var minRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minRef) == .success,
+               let minimized = minRef as? Bool {
+                return !minimized
+            }
+            return true
         }
-        if let up = CGEvent(keyboardEventSource: source, virtualKey: grave, keyDown: false) {
-            up.flags = .maskCommand
-            up.post(tap: .cghidEventTap)
-        }
+        // AXWindows is front-to-back; raising the backmost brings it forward, so
+        // repeated presses round-robin through every window.
+        guard visible.count > 1, let target = visible.last else { return }
+        AXUIElementPerformAction(target, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
     }
 
     // MARK: - Event Tap (for modifier release and mouse clicks only)
