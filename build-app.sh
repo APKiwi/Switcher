@@ -66,9 +66,19 @@ fi
 # Create PkgInfo file
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
-# Ad-hoc code sign the app bundle
-echo "Code signing..."
-codesign --force --deep --sign - "$APP_BUNDLE"
+# Code sign. Prefer the shared self-signed identity "AP Kiwi Local Signing" so the
+# Accessibility grant survives rebuilds (TCC keys on the cert, not the per-build
+# code hash). Fall back to ad-hoc if it isn't on this machine, in which case the
+# grant must be re-given after each rebuild. Create it once with
+# Scripts/make_signing_cert.sh.
+SIGN_ID="AP Kiwi Local Signing"
+if security find-identity -p codesigning -v 2>/dev/null | grep -q "$SIGN_ID"; then
+    echo "Code signing with stable identity: $SIGN_ID"
+    codesign --force --deep --sign "$SIGN_ID" "$APP_BUNDLE"
+else
+    echo "Code signing ad-hoc ('$SIGN_ID' not found; grant will not persist across rebuilds)"
+    codesign --force --deep --sign - "$APP_BUNDLE"
+fi
 echo "Code signing complete"
 
 echo ""
