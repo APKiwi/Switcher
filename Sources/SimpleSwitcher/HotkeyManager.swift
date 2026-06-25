@@ -18,6 +18,7 @@ class HotkeyManager {
 
     private var hotKeyPressedHandler: EventHandlerRef?
     private var tabHotKeyRef: EventHotKeyRef?
+    private var tabOptionHotKeyRef: EventHotKeyRef?
     private var activeHotKeyRefs: [EventHotKeyRef?] = []
     private var eventTap: CFMachPort?
 
@@ -48,6 +49,27 @@ class HotkeyManager {
         set { stateQueue.sync { _shiftWasDown = newValue } }
     }
 
+    /// Which physical modifier drives the *current* switching session. Cmd+Tab and
+    /// Option+Tab are both registered as triggers; whichever fires from idle sets
+    /// this, and every release-detection path (event tap, watchdog) plus the
+    /// active-only hotkey registration follows it — so holding Option cycles and
+    /// releasing Option commits, exactly mirroring the Command behaviour.
+    enum TriggerModifier {
+        case command
+        case option
+
+        /// Carbon modifier mask for RegisterEventHotKey.
+        var carbonKey: Int { self == .option ? optionKey : cmdKey }
+        /// CGEventFlags bit for live flagsChanged / flagsState checks.
+        var eventFlag: CGEventFlags { self == .option ? .maskAlternate : .maskCommand }
+    }
+
+    private var _activeModifier: TriggerModifier = .command
+    var activeModifier: TriggerModifier {
+        get { stateQueue.sync { _activeModifier } }
+        set { stateQueue.sync { _activeModifier = newValue } }
+    }
+
     // Hotkey IDs - using actual key codes for easy mapping
     private enum HotkeyID: UInt32 {
         case tab = 1        // Cmd+Tab - activate/next
@@ -59,6 +81,7 @@ class HotkeyManager {
         case returnKey = 7  // Cmd+Return - activate
         case upArrow = 8    // Cmd+Up - previous row
         case downArrow = 9  // Cmd+Down - next row
+        case tabOption = 10 // Option+Tab - activate/next (parallel trigger)
     }
 
     // Map hotkey IDs to key codes for delegate
@@ -92,10 +115,14 @@ class HotkeyManager {
     ]
 
     func stop() {
-        // Unregister tab hotkey
+        // Unregister tab hotkeys (Cmd+Tab and Option+Tab)
         if let ref = tabHotKeyRef {
             UnregisterEventHotKey(ref)
             tabHotKeyRef = nil
+        }
+        if let ref = tabOptionHotKeyRef {
+            UnregisterEventHotKey(ref)
+            tabOptionHotKeyRef = nil
         }
 
         // Unregister active hotkeys
@@ -117,11 +144,14 @@ class HotkeyManager {
         eventTapThread = nil
     }
 
-    /// Register hotkeys that only work when panel is active (Cmd+H, Cmd+Q, etc.)
+    /// Register hotkeys that only work when the panel is active (H, Q, arrows, …).
+    /// They're registered under whichever modifier started this session, so they
+    /// fire whether the user is holding Command or Option.
     func registerActiveHotkeys() {
         guard activeHotKeyRefs.isEmpty else { return }
 
         let eventTarget = GetEventDispatcherTarget()
+        let modKey = UInt32(activeModifier.carbonKey)
 
         let hotkeys: [(HotkeyID, Int)] = [
             (.h, kVK_ANSI_H),
@@ -137,7 +167,7 @@ class HotkeyManager {
         for (hotkeyID, keyCode) in hotkeys {
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: HotkeyManager.signature, id: hotkeyID.rawValue)
-            RegisterEventHotKey(UInt32(keyCode), UInt32(cmdKey), id, eventTarget, UInt32(kEventHotKeyNoOptions), &ref)
+            RegisterEventHotKey(UInt32(keyCode), modKey, id, eventTarget, UInt32(kEventHotKeyNoOptions), &ref)
             activeHotKeyRefs.append(ref)
         }
 
@@ -148,7 +178,7 @@ class HotkeyManager {
         for keyCode in HotkeyManager.swallowKeyCodes {
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: HotkeyManager.signature, id: UInt32(0x1000 + keyCode))
-            RegisterEventHotKey(UInt32(keyCode), UInt32(cmdKey), id, eventTarget, UInt32(kEventHotKeyNoOptions), &ref)
+            RegisterEventHotKey(UInt32(keyCode), modKey, id, eventTarget, UInt32(kEventHotKeyNoOptions), &ref)
             activeHotKeyRefs.append(ref)
         }
 
@@ -183,8 +213,8 @@ class HotkeyManager {
         timer.schedule(deadline: .now() + 0.1, repeating: 0.1, leeway: .milliseconds(20))
         timer.setEventHandler { [weak self] in
             guard let self = self, self.isActive else { return }
-            let cmdDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
-            if !cmdDown {
+            let modDown = CGEventSource.flagsState(.combinedSessionState).contains(self.activeModifier.eventFlag)
+            if !modDown {
                 self.isActive = false  // mirror the tap's immediate-set
                 DispatchQueue.main.async {
                     self.delegate?.modifierKeyReleased()
@@ -228,8 +258,14 @@ class HotkeyManager {
             if let userData = userData {
                 let manager = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
 
-                if id.id == HotkeyID.tab.rawValue {
-                    // Cmd+Tab - activate switcher or select next
+                if id.id == HotkeyID.tab.rawValue || id.id == HotkeyID.tabOption.rawValue {
+                    // Cmd+Tab / Option+Tab - activate switcher or select next.
+                    // On the activating press (idle → active), record which modifier
+                    // the user is holding so release-detection watches the right key.
+                    if !manager.isActive {
+                        manager.activeModifier =
+                            (id.id == HotkeyID.tabOption.rawValue) ? .option : .command
+                    }
                     manager.isActive = true
                     DispatchQueue.main.async {
                         manager.delegate?.hotkeyTriggered()
@@ -249,9 +285,13 @@ class HotkeyManager {
         let userDataPtr = Unmanaged.passUnretained(self).toOpaque()
         InstallEventHandler(eventTarget, handler, eventTypes.count, &eventTypes, userDataPtr, &hotKeyPressedHandler)
 
-        // Only register Cmd+Tab at startup - other hotkeys registered when panel is active
+        // Register both global triggers at startup — Cmd+Tab and Option+Tab. The
+        // panel-only hotkeys are registered later, when the panel becomes active.
         let id = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.tab.rawValue)
         RegisterEventHotKey(UInt32(kVK_Tab), UInt32(cmdKey), id, eventTarget, UInt32(kEventHotKeyNoOptions), &tabHotKeyRef)
+
+        let optionID = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.tabOption.rawValue)
+        RegisterEventHotKey(UInt32(kVK_Tab), UInt32(optionKey), optionID, eventTarget, UInt32(kEventHotKeyNoOptions), &tabOptionHotKeyRef)
     }
 
     // MARK: - Event Tap (for modifier release and mouse clicks only)
@@ -282,13 +322,15 @@ class HotkeyManager {
             if type == .flagsChanged {
                 let flags = event.flags
 
-                // Detect shift key tap (press then release while Cmd is held)
+                // Track the modifier that started this session (Command or Option),
+                // not Command specifically — so Option+Tab holds/cycles/commits the
+                // same way Cmd+Tab does.
                 let shiftIsDown = flags.contains(.maskShift)
-                let cmdIsDown = flags.contains(.maskCommand)
+                let modIsDown = flags.contains(manager.activeModifier.eventFlag)
 
-                if cmdIsDown {
+                if modIsDown {
                     if shiftIsDown && !manager.shiftWasDown {
-                        // Shift was just pressed while Cmd is held
+                        // Shift was just pressed while the trigger modifier is held
                         DispatchQueue.main.async {
                             manager.delegate?.shiftPressed()
                         }
@@ -296,8 +338,8 @@ class HotkeyManager {
                     manager.shiftWasDown = shiftIsDown
                 }
 
-                // Check if Command key was released
-                if !cmdIsDown {
+                // Trigger modifier released → commit the selection and dismiss.
+                if !modIsDown {
                     manager.shiftWasDown = false
                     // Set inactive immediately
                     manager.isActive = false
