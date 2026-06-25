@@ -52,7 +52,7 @@ class HotkeyManager {
     /// Which physical modifier drives the *current* switching session. Cmd+Tab and
     /// Option+Tab are both registered as triggers; whichever fires from idle sets
     /// this, and every release-detection path (event tap, watchdog) plus the
-    /// active-only hotkey registration follows it — so holding Option cycles and
+    /// active-only hotkey registration follows it, so holding Option cycles and
     /// releasing Option commits, exactly mirroring the Command behaviour.
     enum TriggerModifier {
         case command
@@ -285,7 +285,7 @@ class HotkeyManager {
         let userDataPtr = Unmanaged.passUnretained(self).toOpaque()
         InstallEventHandler(eventTarget, handler, eventTypes.count, &eventTypes, userDataPtr, &hotKeyPressedHandler)
 
-        // Register both global triggers at startup — Cmd+Tab and Option+Tab. The
+        // Register both global triggers at startup: Cmd+Tab and Option+Tab. The
         // panel-only hotkeys are registered later, when the panel becomes active.
         let id = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.tab.rawValue)
         RegisterEventHotKey(UInt32(kVK_Tab), UInt32(cmdKey), id, eventTarget, UInt32(kEventHotKeyNoOptions), &tabHotKeyRef)
@@ -323,7 +323,7 @@ class HotkeyManager {
                 let flags = event.flags
 
                 // Track the modifier that started this session (Command or Option),
-                // not Command specifically — so Option+Tab holds/cycles/commits the
+                // not Command specifically, so Option+Tab holds/cycles/commits the
                 // same way Cmd+Tab does.
                 let shiftIsDown = flags.contains(.maskShift)
                 let modIsDown = flags.contains(manager.activeModifier.eventFlag)
