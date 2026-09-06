@@ -50,12 +50,6 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let donate = NSMenuItem(title: "Donate", action: #selector(donate), keyEquivalent: "")
-        donate.target = self
-        menu.addItem(donate)
-
-        menu.addItem(.separator())
-
         let quit = NSMenuItem(title: "Quit Switcher", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -80,10 +74,6 @@ class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func toggleGrayscale() {
         // Takes effect on the next Cmd+Tab, since the panel rebuilds its icons.
         Preferences.grayscaleIcons.toggle()
-    }
-
-    @objc private func donate() {
-        Preferences.openDonatePage()
     }
 
     @objc private func quit() {

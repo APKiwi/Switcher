@@ -36,22 +36,17 @@ A fast, lightweight Cmd+Tab replacement for macOS. No bloat, no lag, no memory l
 
 ## Installation
 
-### Homebrew (Recommended)
-```bash
-brew tap fad1/tap
-brew install --cask switcher
-```
+This is a fork of [fad1/Switcher](https://github.com/fad1/Switcher) with Option+Tab,
+Option+backtick window cycling, and no donation prompts. It publishes no Homebrew tap
+and no release builds, so build it from source:
 
-### Manual Download
-Grab `Switcher.app` from [Releases](../../releases) and move it to `/Applications`.
-
-### Build from Source
 ```bash
-git clone https://github.com/fad1/Switcher.git
+git clone https://github.com/APKiwi/Switcher.git
 cd Switcher
 swift build -c release
 ./create-icon.sh  # optional: creates app icon
 ./build-app.sh release
+cp -R Switcher.app /Applications/
 ```
 
 ### First Run
@@ -96,9 +91,8 @@ launching Switcher again while it's already running. The window lets you:
 
 - **Show icon in menu bar** — toggle the menu bar icon on or off
 - **Grayscale icons** — show app icons without color (applies on the next Cmd+Tab)
-- **Donate** — support development
 
-The menu bar icon (⌘) also has a quick **Grayscale Icons** toggle, plus Preferences, Donate, and Quit.
+The menu bar icon (⌘) also has a quick **Grayscale Icons** toggle, plus Preferences and Quit.
 
 Grayscale can still be set from the terminal if you prefer:
 ```bash
@@ -128,10 +122,6 @@ Switcher exists because sometimes you just want to switch apps. Fast. Without th
 If you need window thumbnails, per-window switching, or extensive customization, use AltTab. It's a great project with different goals.
 
 If you want a Cmd+Tab that just works, try Switcher.
-
-## Support
-
-If you find Switcher useful, you can [buy me a coffee](https://ko-fi.com/cheetah9960).
 
 ## License
 

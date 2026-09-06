@@ -50,9 +50,6 @@ class PreferencesWindowController: NSWindowController {
             action: #selector(toggleGrayscale)
         )
 
-        let donateButton = NSButton(title: "❤️ Donate", target: self, action: #selector(donate))
-        donateButton.bezelStyle = .rounded
-
         let quitButton = NSButton(title: "Quit Switcher", target: self, action: #selector(quit))
         quitButton.bezelStyle = .rounded
 
@@ -64,7 +61,6 @@ class PreferencesWindowController: NSWindowController {
             launchAtLoginCheckbox,
             menuBarCheckbox,
             grayscaleCheckbox,
-            donateButton,
             quitButton,
             versionLabel
         ])
@@ -120,10 +116,6 @@ class PreferencesWindowController: NSWindowController {
     @objc private func toggleGrayscale() {
         // Takes effect on the next Cmd+Tab, since the panel rebuilds its icons.
         Preferences.grayscaleIcons = grayscaleCheckbox.state == .on
-    }
-
-    @objc private func donate() {
-        Preferences.openDonatePage()
     }
 
     @objc private func quit() {

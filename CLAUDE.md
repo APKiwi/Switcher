@@ -9,7 +9,7 @@ Switcher intercepts the native Cmd+Tab hotkey and displays a custom switcher pan
 - Apps with only minimized windows
 - Background-only apps
 
-**Total codebase: ~1900 lines across 12 Swift files**
+**Total codebase: ~2050 lines across 12 Swift files**
 
 ## Architecture
 
@@ -21,7 +21,7 @@ Sources/SimpleSwitcher/
 ├── AppListProvider.swift# Queries visible apps, maintains MRU order
 ├── AppSwitcherPanel.swift# NSPanel subclass with visual effect blur
 ├── AppItemView.swift    # Individual app item (icon + name)
-├── Preferences.swift    # UserDefaults wrapper (settings keys + donate helper)
+├── Preferences.swift    # UserDefaults wrapper (settings keys)
 ├── AccessibilityPermission.swift # AXIsProcessTrusted check + system prompt
 ├── LoginItem.swift      # "Start at login" via SMAppService (macOS 13+)
 ├── StatusBarController.swift     # Optional menu bar icon (NSStatusItem) + menu
@@ -84,25 +84,25 @@ Sources/SimpleSwitcher/
 
 **Preferences.swift**
 - `enum Preferences`: single source of truth for persisted settings over `UserDefaults.standard`
-- Keys: `grayscaleIcons`, `showMenuBarIcon` (defaults to true), `launchCount`, `hasDonated`
+- Keys: `grayscaleIcons`, `showMenuBarIcon` (defaults to true)
 - `registerDefaults()` must run before any read on every launch (`register(defaults:)` does not persist)
-- `openDonatePage()`: the one choke point for donating — sets `hasDonated = true`, then opens the Ko-fi URL
+- This fork carries no donation surface. Upstream's `launchCount` / `hasDonated` keys and
+  `openDonatePage()` were removed, so any values left in `com.simpleswitcher.app` are inert.
 
 **StatusBarController.swift**
 - Owns the optional menu bar icon (`NSStatusItem`), held by a strong reference (system does not retain it)
 - `show()` / `hide()` toggle the icon live (driven by `showMenuBarIcon`)
-- Menu: Preferences… / Donate / Quit; `onOpenPreferences` closure opens the window
+- Menu: Preferences… / Grayscale Icons / Quit. The `onOpenPreferences` closure opens the window.
 
 **PreferencesWindowController.swift**
 - Reusable programmatic Preferences window (`isReleasedWhenClosed = false`)
-- Checkboxes: "Start at login" (hidden on macOS < 13), "Show icon in menu bar", "Grayscale icons"; plus a Donate button and version label
+- Checkboxes: "Start at login" (hidden on macOS < 13), "Show icon in menu bar", "Grayscale icons", plus a Quit button and a version label
 - The "Start at login" checkbox reflects the live `SMAppService` state (not a stored pref); `syncFromPreferences()` refreshes all controls on show
 - `show()` calls `NSApp.activate(ignoringOtherApps:)` + `makeKeyAndOrderFront` so controls are clickable while staying `.accessory` (no Dock icon)
 - `onToggleMenuBar` callback lets AppDelegate show/hide the status item immediately
 
-**Preferences / menu bar / donation flow (AppDelegate)**
-- App starts silently — the Preferences window does NOT auto-open on every launch
-- On startup it auto-surfaces (with a Donate / Maybe Later prompt) only when `!hasDonated && launchCount % 5 == 0`
+**Preferences / menu bar flow (AppDelegate)**
+- App starts silently. The Preferences window never auto-opens, on any launch.
 - On demand: the menu bar Preferences… item, or relaunching the app (`applicationShouldHandleReopen` surfaces the window)
 - `applicationShouldTerminateAfterLastWindowClosed` returns false so closing Preferences keeps the agent running
 
@@ -264,7 +264,7 @@ rm Switcher.zip
 
 - [ ] Number keys (1-9) for quick selection
 - [ ] Window thumbnails (requires Screen Recording permission)
-- [x] Preferences window (menu bar icon toggle, grayscale toggle, donate) — basic; shortcuts still code-only
+- [x] Preferences window (menu bar icon toggle, grayscale toggle). Basic. Shortcuts are still code-only.
 - [x] App icon (via create-icon.sh)
 - [ ] Full code signing and notarization (currently ad-hoc signed)
 - [ ] Handle fullscreen apps better

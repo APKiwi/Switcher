@@ -49,9 +49,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
         // Set app to accessory (no dock icon)
         NSApp.setActivationPolicy(.accessory)
 
-        // Settings: register in-process fallbacks before any read, then count this launch.
+        // Settings: register in-process fallbacks before any read.
         Preferences.registerDefaults()
-        Preferences.launchCount += 1
 
         // Menu bar icon (optional, controlled by preferences). Provides a Quit
         // escape hatch even while we're waiting for Accessibility permission.
@@ -62,9 +61,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
         // Preferences window (reusable single instance, hidden until requested)
         prefsWindowController = PreferencesWindowController()
         prefsWindowController.onToggleMenuBar = { [weak self] _ in self?.refreshStatusItem() }
-
-        // Start silently; only surface the window when it's time to nag.
-        maybeShowDonationNag()
 
         // Only take over Cmd+Tab once Accessibility permission is confirmed. Until
         // then, native Cmd+Tab is left working — so a first launch without
@@ -324,23 +320,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
             statusBarController.show()
         } else {
             statusBarController.hide()
-        }
-    }
-
-    /// On startup only: every 5th launch (until the user donates) surface
-    /// Preferences alongside a donation prompt. Donating silences it forever.
-    private func maybeShowDonationNag() {
-        guard !Preferences.hasDonated, Preferences.launchCount % 5 == 0 else { return }
-
-        showPreferences()
-
-        let alert = NSAlert()
-        alert.messageText = "Enjoying Switcher?"
-        alert.informativeText = "If it's useful, consider supporting development."
-        alert.addButton(withTitle: "Donate")
-        alert.addButton(withTitle: "Maybe Later")
-        if alert.runModal() == .alertFirstButtonReturn {
-            Preferences.openDonatePage()
         }
     }
 }
