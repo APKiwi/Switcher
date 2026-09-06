@@ -8,13 +8,24 @@ class PreferencesWindowController: NSWindowController {
     /// can show/hide the status item live. Carries the new value.
     var onToggleMenuBar: ((Bool) -> Void)?
 
+    /// Invoked when the recent-apps cap checkbox changes, so the caller can
+    /// register/unregister the ⌥⌘Tab show-all hotkey live. Carries the new value.
+    var onToggleLimitRecent: ((Bool) -> Void)?
+
     private var launchAtLoginCheckbox: NSButton!
     private var menuBarCheckbox: NSButton!
     private var grayscaleCheckbox: NSButton!
+    private var declutterTipCheckbox: NSButton!
+    private var hideMinimizedCheckbox: NSButton!
+    private var limitRecentCheckbox: NSButton!
+    private var recentLimitPopup: NSPopUpButton!
+    private var limitHintLabel: NSTextField!
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 200),
+            // Height must cover every stack row; a new checkbox needs ~32pt more
+            // (the recent-apps hint sub-row accounts for 18 of the current total).
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 320),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -49,6 +60,47 @@ class PreferencesWindowController: NSWindowController {
             target: self,
             action: #selector(toggleGrayscale)
         )
+        declutterTipCheckbox = NSButton(
+            checkboxWithTitle: "Show declutter tip in switcher",
+            target: self,
+            action: #selector(toggleDeclutterTip)
+        )
+
+        hideMinimizedCheckbox = NSButton(
+            checkboxWithTitle: "Hide apps with only minimized windows",
+            target: self,
+            action: #selector(toggleHideMinimized)
+        )
+
+        limitRecentCheckbox = NSButton(
+            checkboxWithTitle: "Show only the",
+            target: self,
+            action: #selector(toggleLimitRecent)
+        )
+        // A popup rather than a text field: the count has a handful of sensible
+        // values, and this way there is no formatter, no clamping and no
+        // half-typed state to validate.
+        recentLimitPopup = NSPopUpButton()
+        recentLimitPopup.addItems(withTitles: (2...12).map(String.init))
+        recentLimitPopup.target = self
+        recentLimitPopup.action = #selector(changeRecentLimit)
+
+        // The count reads as part of the sentence, so the row is one line:
+        // "Show only the [7] most recently used apps".
+        let limitRow = NSStackView(views: [
+            limitRecentCheckbox,
+            recentLimitPopup,
+            NSTextField(labelWithString: "most recently used apps")
+        ])
+        limitRow.orientation = .horizontal
+        limitRow.alignment = .firstBaseline
+        limitRow.spacing = 6
+
+        // The ⌥⌘Tab escape hatch is otherwise invisible; hidden (and collapsed by
+        // the stack view) while the cap is off, when the hotkey isn't registered.
+        limitHintLabel = NSTextField(labelWithString: "⌥⌘Tab shows all apps")
+        limitHintLabel.font = .systemFont(ofSize: 11)
+        limitHintLabel.textColor = .secondaryLabelColor
 
         let quitButton = NSButton(title: "Quit Switcher", target: self, action: #selector(quit))
         quitButton.bezelStyle = .rounded
@@ -61,6 +113,10 @@ class PreferencesWindowController: NSWindowController {
             launchAtLoginCheckbox,
             menuBarCheckbox,
             grayscaleCheckbox,
+            declutterTipCheckbox,
+            hideMinimizedCheckbox,
+            limitRow,
+            limitHintLabel,
             quitButton,
             versionLabel
         ])
@@ -68,6 +124,7 @@ class PreferencesWindowController: NSWindowController {
         stack.alignment = .leading
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setCustomSpacing(3, after: limitRow)  // the hint reads as part of its row
         contentView.addSubview(stack)
 
         NSLayoutConstraint.activate([
@@ -92,6 +149,17 @@ class PreferencesWindowController: NSWindowController {
         launchAtLoginCheckbox.state = LoginItem.isEnabled ? .on : .off
         menuBarCheckbox.state = Preferences.showMenuBarIcon ? .on : .off
         grayscaleCheckbox.state = Preferences.grayscaleIcons ? .on : .off
+        declutterTipCheckbox.state = Preferences.showDeclutterTip ? .on : .off
+        hideMinimizedCheckbox.state = Preferences.hideMinimizedOnlyApps ? .on : .off
+        limitRecentCheckbox.state = Preferences.limitRecentApps ? .on : .off
+        // selectItem(withTitle:) on a value not in the list leaves nothing
+        // selected, so fall back to the registered default.
+        recentLimitPopup.selectItem(withTitle: String(Preferences.recentAppsLimit))
+        if recentLimitPopup.indexOfSelectedItem < 0 {
+            recentLimitPopup.selectItem(withTitle: "7")
+        }
+        recentLimitPopup.isEnabled = Preferences.limitRecentApps
+        limitHintLabel.isHidden = !Preferences.limitRecentApps
     }
 
     private func versionString() -> String {
@@ -116,6 +184,32 @@ class PreferencesWindowController: NSWindowController {
     @objc private func toggleGrayscale() {
         // Takes effect on the next Cmd+Tab, since the panel rebuilds its icons.
         Preferences.grayscaleIcons = grayscaleCheckbox.state == .on
+    }
+
+    @objc private func toggleDeclutterTip() {
+        // Takes effect on the next Cmd+Tab — the panel re-reads the pref in updateHint().
+        Preferences.showDeclutterTip = declutterTipCheckbox.state == .on
+    }
+
+    @objc private func toggleHideMinimized() {
+        // Takes effect on the next Cmd+Tab — AppListProvider re-reads the pref
+        // every time it builds the list.
+        Preferences.hideMinimizedOnlyApps = hideMinimizedCheckbox.state == .on
+    }
+
+    @objc private func toggleLimitRecent() {
+        // Takes effect on the next Cmd+Tab — AppListProvider re-reads the pref
+        // every time it builds the list. The ⌥⌘Tab hotkey flips immediately,
+        // via the callback.
+        Preferences.limitRecentApps = limitRecentCheckbox.state == .on
+        recentLimitPopup.isEnabled = Preferences.limitRecentApps
+        limitHintLabel.isHidden = !Preferences.limitRecentApps
+        onToggleLimitRecent?(Preferences.limitRecentApps)
+    }
+
+    @objc private func changeRecentLimit() {
+        guard let title = recentLimitPopup.titleOfSelectedItem, let count = Int(title) else { return }
+        Preferences.recentAppsLimit = count
     }
 
     @objc private func quit() {

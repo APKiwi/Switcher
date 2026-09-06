@@ -1,7 +1,10 @@
 import Cocoa
+import SwitcherKernels
 
 protocol AppSwitcherPanelDelegate: AnyObject {
     func panelDidSelectApp(_ app: AppInfo)
+    /// A click landed on a click shield (outside the panel) — dismiss, like Escape.
+    func panelDidRequestDismiss()
 }
 
 class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
@@ -14,13 +17,37 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
     private var selectedColumn: Int = 0
     private var visualEffectView: NSVisualEffectView!
 
+    // Subtle "hide others to declutter" reminder shown at the bottom of the panel
+    // only when the switcher has grown cluttered (2+ rows) and the pref is enabled.
+    // Renders as plain text at rest and reveals itself as a clickable pill button
+    // on hover (see DeclutterHintView). Reused across opens; kept out of the
+    // `rows` array so navigation/hit-testing never treat it as an app. See updateHint.
+    private var hintView: DeclutterHintView?
+
     // Dead zone for hover - like AltTab's CursorEvents
     private var deadZoneInitialPosition: NSPoint?
     private var isAllowedToMouseHover = false
     private var mouseMonitor: Any?
 
+    // Mid-open resizes (remove/append) can fire spurious mouseEntered events,
+    // so hover is suppressed for ~100ms around them (see
+    // suppressHoverDuringResize). The token pairs each delayed restore with its
+    // own suppression and the pre-suppression value is captured only by the
+    // outermost call, so overlapping suppressions (H twice quickly, or a
+    // live-refresh append during a removal) can't clobber each other and leave
+    // hover stuck off.
+    private var hoverSuppressionToken = 0
+    private var hoverAllowedBeforeSuppression: Bool?
+
+    // Invisible per-screen panels that swallow clicks outside the switcher while
+    // it's open (the .listenOnly tap can't consume them). See showClickShields.
+    private var clickShields: [ClickShieldPanel] = []
+
     // Recomputed per show based on the target screen (see iconSize(for:)).
     private var itemSize: CGFloat = 76
+    // Max items per row, computed from screen width in showWithApps and reused by
+    // appendApps so live-added apps pack into rows the same way.
+    private var itemsPerRow: Int = 1
     private let itemSpacing: CGFloat = 0
     private let rowSpacing: CGFloat = 4
     private let panelPadding: CGFloat = 10
@@ -64,7 +91,9 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
     }
 
     private func setupVisualEffectView() {
-        visualEffectView = NSVisualEffectView()
+        let effectView = HoverTrackingVisualEffectView()
+        effectView.onMouseMovement = { [weak self] in self?.handleMouseMoved() }
+        visualEffectView = effectView
         visualEffectView.material = .hudWindow
         visualEffectView.state = .active
         visualEffectView.blendingMode = .behindWindow
@@ -134,7 +163,7 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         // Calculate max items per row based on screen width
         let maxPanelWidth = screenFrame.width * screenMarginPercent
         let availableWidth = maxPanelWidth - panelPadding * 2
-        let itemsPerRow = max(1, Int(floor((availableWidth + itemSpacing) / (itemSize + itemSpacing))))
+        itemsPerRow = max(1, Int(floor((availableWidth + itemSpacing) / (itemSize + itemSpacing))))
 
         // Create app views and organize into rows
         var currentRow: [AppItemView] = []
@@ -162,38 +191,34 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
             verticalStackView.addArrangedSubview(currentRowStackView)
         }
 
-        // Calculate panel size
-        let rowCount = rows.count
-        let maxRowCount = rows.map { $0.count }.max() ?? 1
-        let panelWidth = CGFloat(maxRowCount) * itemSize + CGFloat(maxRowCount - 1) * itemSpacing + panelPadding * 2
-        let panelHeight = CGFloat(rowCount) * itemSize + CGFloat(rowCount - 1) * rowSpacing + panelPadding * 2
+        // Show the "start fresh" hint when the switcher has grown cluttered (2+ rows).
+        let showingHint = updateHint()
+
+        // Calculate panel size (including the hint row if shown)
+        let size = panelSize(showingHint: showingHint)
 
         // Center panel on target screen
-        let panelX = screenFrame.midX - panelWidth / 2
-        let panelY = screenFrame.midY - panelHeight / 2
+        let panelX = screenFrame.midX - size.width / 2
+        let panelY = screenFrame.midY - size.height / 2
 
-        setFrame(NSRect(x: panelX, y: panelY, width: panelWidth, height: panelHeight), display: true)
+        setFrame(NSRect(x: panelX, y: panelY, width: size.width, height: size.height), display: true)
 
         // Select initial app (convert flat index to row/column)
-        let adjustedIndex = min(selectIndex, apps.count - 1)
-        if adjustedIndex >= 0 {
-            selectedRow = adjustedIndex / itemsPerRow
-            selectedColumn = adjustedIndex % itemsPerRow
-            // Clamp to valid range for last row
-            if selectedRow >= rows.count {
-                selectedRow = rows.count - 1
-                selectedColumn = rows[selectedRow].count - 1
-            } else if selectedColumn >= rows[selectedRow].count {
-                selectedColumn = rows[selectedRow].count - 1
-            }
+        if let position = GridNavigation.initialPosition(flatIndex: selectIndex,
+                                                         itemCount: apps.count,
+                                                         itemsPerRow: itemsPerRow,
+                                                         rowLengths: rowLengths) {
+            selectedPosition = position
             updateSelection()
         }
 
         // Reset dead zone - hover will be enabled after mouse moves 3+ pixels
         deadZoneInitialPosition = nil
         isAllowedToMouseHover = false
+        cancelHoverSuppression()
         startMouseMonitor()
 
+        showClickShields()
         orderFront(nil)
     }
 
@@ -209,7 +234,6 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
     private func startMouseMonitor() {
         stopMouseMonitor()
 
-        // Single global monitor for mouse movement
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
             self?.handleMouseMoved()
         }
@@ -218,7 +242,6 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
     private func handleMouseMoved() {
         let currentPos = NSEvent.mouseLocation
 
-        // Dead zone logic (like AltTab's CursorEvents)
         if !isAllowedToMouseHover {
             if deadZoneInitialPosition == nil {
                 deadZoneInitialPosition = currentPos
@@ -234,9 +257,11 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
             }
         }
 
-        // Hover enabled - update selection if mouse is over panel
         if frame.contains(currentPos) {
             selectAppUnderMouse()
+            updateHintHover()
+        } else {
+            hintView?.setHovered(false)
         }
     }
 
@@ -246,7 +271,6 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
 
         for (rowIndex, row) in rows.enumerated() {
             for (colIndex, view) in row.enumerated() {
-                // Convert view bounds to window coordinates
                 let viewFrame = view.convert(view.bounds, to: nil)
                 if viewFrame.contains(windowPoint) {
                     if selectedRow != rowIndex || selectedColumn != colIndex {
@@ -260,6 +284,24 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         }
     }
 
+    /// Reveal/unreveal the hint's button styling based on the pointer position.
+    /// Only called once the dead zone has been crossed (from handleMouseMoved),
+    /// so the button never flashes just because the panel opened under the cursor.
+    private func updateHintHover() {
+        guard let hint = hintView, hint.superview != nil else { return }
+        let windowPoint = mouseLocationOutsideOfEventStream
+        hint.setHovered(hint.convert(hint.bounds, to: nil).contains(windowPoint))
+    }
+
+    /// True when the pointer is on the hint AND the hint is currently revealed
+    /// as a button. Requiring the revealed state means a click can only trigger
+    /// Hide Others after the hover styling made the consequence visible —
+    /// a stray click just below the bottom icon row can't hide everything.
+    func isMouseOverHintButton() -> Bool {
+        guard let hint = hintView, hint.superview != nil, hint.isHovered else { return false }
+        return hint.convert(hint.bounds, to: nil).contains(mouseLocationOutsideOfEventStream)
+    }
+
     /// App under the current mouse position, independent of dead-zone hover state.
     func getAppUnderMouse() -> AppInfo? {
         return getAppAtPoint(mouseLocationOutsideOfEventStream)
@@ -268,7 +310,6 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
     func getAppAtPoint(_ windowPoint: NSPoint) -> AppInfo? {
         for row in rows {
             for view in row {
-                // Convert view bounds to window coordinates
                 let viewFrame = view.convert(view.bounds, to: nil)
                 if viewFrame.contains(windowPoint) {
                     return view.appInfo
@@ -285,10 +326,40 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         }
     }
 
+    // MARK: - Click Shields
+
+    /// Cover every screen with an invisible panel one window level below the
+    /// switcher while it's open. The event tap is .listenOnly and cannot consume
+    /// events, so without these a click outside the panel would also land in the
+    /// app under the cursor. The shields catch that click via ordinary
+    /// window-server routing (no permissions involved) and request a dismiss —
+    /// click-away behaves like Escape. Clicks on the switcher itself are
+    /// unaffected: it floats above the shields.
+    /// Recreated per open (screens can change) and released on hide so their
+    /// full-screen backing stores don't stay resident between switches.
+    private func showClickShields() {
+        hideClickShields()
+        for screen in NSScreen.screens {
+            let shield = ClickShieldPanel(screenFrame: screen.frame)
+            shield.onClick = { [weak self] in self?.panelDelegate?.panelDidRequestDismiss() }
+            shield.orderFront(nil)
+            clickShields.append(shield)
+        }
+    }
+
+    private func hideClickShields() {
+        clickShields.forEach { $0.orderOut(nil) }
+        clickShields.removeAll()
+    }
+
     func hidePanel() {
         stopMouseMonitor()
+        hideClickShields()
         deadZoneInitialPosition = nil
         isAllowedToMouseHover = false
+        cancelHoverSuppression()
+        // Also restores the arrow cursor if the panel closes mid-hover.
+        hintView?.setHovered(false)
         orderOut(nil)
         // Release the item views (and their icon image references) while closed,
         // so they don't sit resident between switches. The next open rebuilds
@@ -307,71 +378,39 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         }
     }
 
+    /// Row lengths are all `GridNavigation` needs to move the selection; the
+    /// views stay here.
+    private var rowLengths: [Int] { rows.map { $0.count } }
+
+    private var selectedPosition: GridPosition {
+        get { GridPosition(row: selectedRow, column: selectedColumn) }
+        set {
+            selectedRow = newValue.row
+            selectedColumn = newValue.column
+        }
+    }
+
     func selectNext() {
         guard !rows.isEmpty else { return }
-
-        // Move right in current row
-        if selectedColumn < rows[selectedRow].count - 1 {
-            selectedColumn += 1
-        } else {
-            // Move to next row, first column
-            if selectedRow < rows.count - 1 {
-                selectedRow += 1
-                selectedColumn = 0
-            } else {
-                // Wrap to first row, first column
-                selectedRow = 0
-                selectedColumn = 0
-            }
-        }
+        selectedPosition = GridNavigation.next(from: selectedPosition, rowLengths: rowLengths)
         updateSelection()
     }
 
     func selectPrevious() {
         guard !rows.isEmpty else { return }
-
-        // Move left in current row
-        if selectedColumn > 0 {
-            selectedColumn -= 1
-        } else {
-            // Move to previous row, last column
-            if selectedRow > 0 {
-                selectedRow -= 1
-                selectedColumn = rows[selectedRow].count - 1
-            } else {
-                // Wrap to last row, last column
-                selectedRow = rows.count - 1
-                selectedColumn = rows[selectedRow].count - 1
-            }
-        }
+        selectedPosition = GridNavigation.previous(from: selectedPosition, rowLengths: rowLengths)
         updateSelection()
     }
 
     func selectUp() {
         guard rows.count > 1 else { return }
-
-        if selectedRow > 0 {
-            selectedRow -= 1
-        } else {
-            // Wrap to last row
-            selectedRow = rows.count - 1
-        }
-        // Clamp column to row length
-        selectedColumn = min(selectedColumn, rows[selectedRow].count - 1)
+        selectedPosition = GridNavigation.up(from: selectedPosition, rowLengths: rowLengths)
         updateSelection()
     }
 
     func selectDown() {
         guard rows.count > 1 else { return }
-
-        if selectedRow < rows.count - 1 {
-            selectedRow += 1
-        } else {
-            // Wrap to first row
-            selectedRow = 0
-        }
-        // Clamp column to row length
-        selectedColumn = min(selectedColumn, rows[selectedRow].count - 1)
+        selectedPosition = GridNavigation.down(from: selectedPosition, rowLengths: rowLengths)
         updateSelection()
     }
 
@@ -388,25 +427,19 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
         let removedView = rows[selectedRow][selectedColumn]
         let removedApp = removedView.appInfo
 
-        // Temporarily disable hover during removal (panel resize can trigger mouseEntered)
-        let wasAllowed = isAllowedToMouseHover
-        isAllowedToMouseHover = false
+        suppressHoverDuringResize()
 
-        // Remove from flat list
         if let flatIndex = appViews.firstIndex(where: { $0 === removedView }) {
             appViews.remove(at: flatIndex)
         }
 
-        // Remove from current row's stack view
         if let rowStackView = removedView.superview as? NSStackView {
             rowStackView.removeArrangedSubview(removedView)
             removedView.removeFromSuperview()
         }
 
-        // Remove from rows array
         rows[selectedRow].remove(at: selectedColumn)
 
-        // Remove empty rows
         if rows[selectedRow].isEmpty {
             if let rowStackView = verticalStackView.arrangedSubviews[safe: selectedRow] {
                 verticalStackView.removeArrangedSubview(rowStackView)
@@ -415,46 +448,58 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
             rows.remove(at: selectedRow)
         }
 
-        // Adjust selection
-        if rows.isEmpty {
-            selectedRow = -1
-            selectedColumn = -1
-        } else {
-            // Clamp row
-            if selectedRow >= rows.count {
-                selectedRow = rows.count - 1
-            }
-            // Clamp column
-            if selectedColumn >= rows[selectedRow].count {
-                selectedColumn = rows[selectedRow].count - 1
-            }
-        }
+        // An emptied grid selects GridPosition.noSelection (-1/-1); getSelectedApp and
+        // removeSelectedApp both range-check, so that returns nil rather than
+        // trapping.
+        selectedPosition = GridNavigation.clampAfterRemoval(selectedPosition, rowLengths: rowLengths)
 
-        // Update panel size
+        // Update panel size (hint may drop off if we fell below 2 rows)
         if !rows.isEmpty {
-            let rowCount = rows.count
-            let maxRowCount = rows.map { $0.count }.max() ?? 1
-            let panelWidth = CGFloat(maxRowCount) * itemSize + CGFloat(maxRowCount - 1) * itemSpacing + panelPadding * 2
-            let panelHeight = CGFloat(rowCount) * itemSize + CGFloat(rowCount - 1) * rowSpacing + panelPadding * 2
-
-            var frame = self.frame
-            let centerX = frame.midX
-            let centerY = frame.midY
-            frame.size.width = panelWidth
-            frame.size.height = panelHeight
-            frame.origin.x = centerX - panelWidth / 2
-            frame.origin.y = centerY - panelHeight / 2
-            setFrame(frame, display: true)
-
+            resizeKeepingCenter()
             updateSelection()
         }
 
-        // Restore hover state after a brief delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.isAllowedToMouseHover = wasAllowed
+        return removedApp
+    }
+
+    /// Append newly-appeared apps to the end of the grid WITHOUT disturbing the
+    /// existing items or the current selection (unlike showWithApps, which fully
+    /// rebuilds, recenters on screen, resets the dead zone, and re-orders front).
+    /// Driven by AppDelegate's live-refresh timer while the panel is open.
+    func appendApps(_ apps: [AppInfo]) {
+        guard !apps.isEmpty, !rows.isEmpty else { return }
+
+        suppressHoverDuringResize()
+
+        // Detach the hint (it's the last arranged subview) so new rows append before
+        // it; updateHint() re-adds it last afterward.
+        if let existing = hintView, existing.superview != nil {
+            verticalStackView.removeArrangedSubview(existing)
+            existing.removeFromSuperview()
         }
 
-        return removedApp
+        // The current last row's horizontal stack view (its items share it as superview).
+        var currentRowStackView = rows.last?.first?.superview as? NSStackView
+
+        for app in apps {
+            // Start a new row if the current one is full or missing.
+            if currentRowStackView == nil || (rows.last?.count ?? itemsPerRow) >= itemsPerRow {
+                let rowStack = createRowStackView()
+                verticalStackView.addArrangedSubview(rowStack)
+                rows.append([])
+                currentRowStackView = rowStack
+            }
+            let itemView = AppItemView(appInfo: app, itemSize: itemSize)
+            itemView.delegate = self
+            appViews.append(itemView)
+            currentRowStackView?.addArrangedSubview(itemView)
+            rows[rows.count - 1].append(itemView)
+        }
+
+        resizeKeepingCenter()
+
+        // Selection indices are unchanged (append-only), just repaint highlight.
+        updateSelection()
     }
 
     var hasApps: Bool {
@@ -462,6 +507,82 @@ class AppSwitcherPanel: NSPanel, AppItemViewDelegate {
     }
 
     // MARK: - Private Methods
+
+    /// Panel size from the current `rows`, adding a row for the hint when shown.
+    /// Single source of truth so `showWithApps` and `removeSelectedApp` stay consistent.
+    private func panelSize(showingHint: Bool) -> CGSize {
+        let rowCount = rows.count
+        let maxRowCount = rows.map { $0.count }.max() ?? 1
+        var width = CGFloat(maxRowCount) * itemSize + CGFloat(maxRowCount - 1) * itemSpacing + panelPadding * 2
+        var height = CGFloat(rowCount) * itemSize + CGFloat(rowCount - 1) * rowSpacing + panelPadding * 2
+        if showingHint, let hint = hintView {
+            let hintSize = hint.fittingSize
+            height += rowSpacing + hintSize.height        // stack spacing + hint pill
+            width = max(width, hintSize.width + panelPadding * 2)  // don't clip a wide hint
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    /// Re-attach the hint if warranted, then resize to fit the current rows,
+    /// keeping the panel's center fixed (NOT recentering on screen — the panel
+    /// is already placed). Shared by removeSelectedApp and appendApps.
+    private func resizeKeepingCenter() {
+        let showingHint = updateHint()
+        let size = panelSize(showingHint: showingHint)
+        var frame = self.frame
+        let centerX = frame.midX
+        let centerY = frame.midY
+        frame.size = size
+        frame.origin.x = centerX - size.width / 2
+        frame.origin.y = centerY - size.height / 2
+        setFrame(frame, display: true)
+    }
+
+    /// Suppress hover briefly around a mid-open resize, restoring the
+    /// pre-suppression value once things settle (see the token/value members).
+    private func suppressHoverDuringResize() {
+        if hoverAllowedBeforeSuppression == nil {
+            hoverAllowedBeforeSuppression = isAllowedToMouseHover
+        }
+        isAllowedToMouseHover = false
+        hoverSuppressionToken += 1
+        let token = hoverSuppressionToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self = self, self.hoverSuppressionToken == token else { return }
+            if let allowed = self.hoverAllowedBeforeSuppression {
+                self.isAllowedToMouseHover = allowed
+                self.hoverAllowedBeforeSuppression = nil
+            }
+        }
+    }
+
+    /// Drop any pending hover restore. Called when the panel opens or closes,
+    /// where hover state is reset wholesale — a stale restore from the previous
+    /// open must not re-enable hover past the fresh dead zone.
+    private func cancelHoverSuppression() {
+        hoverSuppressionToken += 1
+        hoverAllowedBeforeSuppression = nil
+    }
+
+    /// Attach the hint as the last arranged subview when cluttered (2+ rows), else
+    /// detach it. Appended last so it never shifts a row's index in the stack (which
+    /// `removeSelectedApp` relies on). Returns whether the hint is now showing.
+    @discardableResult
+    private func updateHint() -> Bool {
+        // Always detach first: avoids a double-add and keeps hide/rebuild clean.
+        // Unhovering here also drops stale button styling across rebuilds/resizes;
+        // the next mouse move re-reveals it if the pointer is still on the hint.
+        if let existing = hintView, existing.superview != nil {
+            existing.setHovered(false)
+            verticalStackView.removeArrangedSubview(existing)
+            existing.removeFromSuperview()
+        }
+        guard Preferences.showDeclutterTip, rows.count >= 2 else { return false }
+        let view = hintView ?? DeclutterHintView()
+        hintView = view
+        verticalStackView.addArrangedSubview(view)
+        return true
+    }
 
     private func updateSelection() {
         for (rowIndex, row) in rows.enumerated() {
@@ -492,6 +613,146 @@ private extension Array {
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
     }
+}
+
+// MARK: - Declutter Hint View
+
+/// The declutter tip at the bottom of the panel. Looks like a plain caption at
+/// rest; once the pointer is over it (past the dead zone) it reveals itself as
+/// a pill button — same highlight as a selected app — with a pointing-hand
+/// cursor. The pill hugs the text (a few points of padding), so the clickable
+/// area stays narrow. Clicks are routed by AppDelegate.mouseClicked via
+/// isMouseOverHintButton(); this view draws, it doesn't handle events.
+private class DeclutterHintView: NSView {
+    private let label: NSTextField
+    private(set) var isHovered = false
+
+    private let horizontalPadding: CGFloat = 9
+    private let verticalPadding: CGFloat = 4
+
+    init() {
+        label = NSTextField(labelWithString: "⌥⌘H · Hide others — fewer icons here")
+        label.font = NSFont.systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        super.init(frame: .zero)
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: horizontalPadding),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -horizontalPadding),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: verticalPadding),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -verticalPadding)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2  // full pill
+    }
+
+    func setHovered(_ hovered: Bool) {
+        guard hovered != isHovered else { return }
+        isHovered = hovered
+        layer?.backgroundColor = hovered ? NSColor.white.withAlphaComponent(0.3).cgColor : nil
+        label.textColor = hovered ? .labelColor : .secondaryLabelColor
+        // The panel never becomes key, so cursor rects don't fire; set directly.
+        if hovered {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+}
+
+// MARK: - Hover Tracking Effect View
+
+/// The panel's content view; forwards any mouse movement over the panel to the
+/// hover logic. Hover normally rides a global mouseMoved monitor, but global
+/// monitors never see the app's OWN events — so when Switcher itself is the
+/// active app (e.g. Cmd+Tab right after using the Preferences window) the
+/// monitor goes silent and hover selection dies. This tracking area fires
+/// regardless of which app is active. Both paths call handleMouseMoved, which
+/// is idempotent, so double delivery is harmless.
+private class HoverTrackingVisualEffectView: NSVisualEffectView {
+    var onMouseMovement: (() -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area = hoverTrackingArea { removeTrackingArea(area) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) { onMouseMovement?() }
+    override func mouseEntered(with event: NSEvent) { onMouseMovement?() }
+    override func mouseExited(with event: NSEvent) { onMouseMovement?() }
+}
+
+// MARK: - Click Shield
+
+/// Invisible, non-activating panel covering one screen just below the switcher.
+/// Swallows clicks that would otherwise fall through to the app behind the
+/// panel and reports them so the switcher can dismiss.
+private class ClickShieldPanel: NSPanel {
+    var onClick: (() -> Void)?
+
+    init(screenFrame: NSRect) {
+        super.init(
+            contentRect: screenFrame,
+            styleMask: [.nonactivatingPanel, .borderless],
+            backing: .buffered,
+            defer: false
+        )
+        // One notch below the switcher panel (.popUpMenu) so it never covers it.
+        level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue - 1)
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        isOpaque = false
+        hasShadow = false
+        isReleasedWhenClosed = false
+        // Not .clear: the window server treats fully transparent windows as
+        // click-through; a hair of alpha keeps clicks landing here. Explicitly
+        // setting ignoresMouseEvents=false also opts out of that automatism.
+        backgroundColor = NSColor.black.withAlphaComponent(0.001)
+        ignoresMouseEvents = false
+        contentView = ClickShieldView(onClick: { [weak self] in self?.onClick?() })
+    }
+}
+
+private class ClickShieldView: NSView {
+    private let onClick: () -> Void
+
+    init(onClick: @escaping () -> Void) {
+        self.onClick = onClick
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    // The shield is non-activating and never key, so the first click must count.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { onClick() }
+    override func rightMouseDown(with event: NSEvent) { onClick() }
+    override func otherMouseDown(with event: NSEvent) { onClick() }
 }
 
 // MARK: - Appearance Adaptive View

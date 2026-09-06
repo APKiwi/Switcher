@@ -1,13 +1,25 @@
 import Cocoa
 import Carbon
 import ApplicationServices
+import SwitcherKernels
 
 protocol HotkeyManagerDelegate: AnyObject {
     func hotkeyTriggered()
+    /// Cmd+Shift+Tab: open the switcher in reverse (from idle) or step backward
+    /// (while active) — mirrors the native reverse-cycling gesture.
+    func hotkeyTriggeredReverse()
+    /// Cmd+Opt+Tab: open the switcher with the FULL uncapped list (from idle) or
+    /// expand the current session to it (while active). Only registered while
+    /// the recent-apps cap is on — it's the cap's escape hatch.
+    func hotkeyTriggeredShowAll()
     func modifierKeyReleased()
     func keyPressed(_ keyCode: UInt16)
-    func shiftPressed()
-    func mouseClicked(at point: CGPoint)
+    /// Shift pressed and released while Cmd is held, with no Shift+Tab in
+    /// between — the legacy "tap Shift to go back" gesture. Fires on release so
+    /// it can't double up with hotkeyTriggeredReverse.
+    func shiftTapped()
+    func hideOthersRequested()
+    func mouseClicked()
 }
 
 class HotkeyManager {
@@ -19,17 +31,24 @@ class HotkeyManager {
 
     private var hotKeyPressedHandler: EventHandlerRef?
     private var tabHotKeyRef: EventHotKeyRef?
+    private var shiftTabHotKeyRef: EventHotKeyRef?
+    private var showAllHotKeyRef: EventHotKeyRef?
     private var tabOptionHotKeyRef: EventHotKeyRef?
+    private var shiftTabOptionHotKeyRef: EventHotKeyRef?
     private var graveOptionHotKeyRef: EventHotKeyRef?
     private var activeHotKeyRefs: [EventHotKeyRef?] = []
     private var eventTap: CFMachPort?
 
     // Dedicated thread + run loop that services the event tap, so its callback is
-    // never starved by main-thread UI work (see setupEventTap for rationale).
+    // never starved by main-thread UI work (see tryCreateEventTap for rationale).
     private var eventTapThread: Thread?
-    private var eventTapRunLoop: CFRunLoop?
+    // Written by the tap thread, read by stop() — access only under stateQueue.
+    // The flag covers the startup race: if stop() runs before the thread has
+    // stored its run loop, the thread sees it and exits instead of running
+    // unstoppable forever.
+    private var _eventTapRunLoop: CFRunLoop?
+    private var _tapStopRequested = false
 
-    // Serial queue for thread-safe state access
     private let stateQueue = DispatchQueue(label: "com.simpleswitcher.state")
 
     // Backstop watchdog (see startCmdWatchdog) — polls live modifier state while
@@ -39,16 +58,18 @@ class HotkeyManager {
 
     // State protected by stateQueue
     private var _isActive = false
-    private var _shiftWasDown = false
+    // Shift-tap vs Shift+Tab, decided in SwitcherKernels. Touched from both the
+    // tap thread (flagsChanged) and the main thread (the Carbon handler), so
+    // every transition runs as one critical section rather than as separate
+    // reads and writes.
+    private var _shiftTap = ShiftTapResolver()
 
+    /// Set this synchronously in an event handler BEFORE any async delegate call:
+    /// release-build optimizations otherwise let the tap thread observe the old
+    /// value and drop the matching Cmd-up.
     var isActive: Bool {
         get { stateQueue.sync { _isActive } }
         set { stateQueue.sync { _isActive = newValue } }
-    }
-
-    private var shiftWasDown: Bool {
-        get { stateQueue.sync { _shiftWasDown } }
-        set { stateQueue.sync { _shiftWasDown = newValue } }
     }
 
     /// Which physical modifier drives the *current* switching session. Cmd+Tab and
@@ -72,7 +93,17 @@ class HotkeyManager {
         set { stateQueue.sync { _activeModifier = newValue } }
     }
 
-    // Hotkey IDs - using actual key codes for easy mapping
+    private func noteShiftTabHotkey() {
+        stateQueue.sync { _shiftTap.shiftTabHotkeyFired() }
+    }
+
+    private func resolveShiftTap(cmdDown: Bool, shiftDown: Bool) -> ShiftTapResolver.Action {
+        stateQueue.sync { _shiftTap.flagsChanged(cmdDown: cmdDown, shiftDown: shiftDown) }
+    }
+
+    // Hotkey IDs — sequential, NOT key codes; hotkeyToKeyCode maps them back to
+    // key codes for the delegate. The comments name the modifier each one is
+    // registered with, which the raw values don't show.
     private enum HotkeyID: UInt32 {
         case tab = 1        // Cmd+Tab - activate/next
         case h = 2          // Cmd+H - hide
@@ -83,8 +114,14 @@ class HotkeyManager {
         case returnKey = 7  // Cmd+Return - activate
         case upArrow = 8    // Cmd+Up - previous row
         case downArrow = 9  // Cmd+Down - next row
-        case tabOption = 10 // Option+Tab - activate/next (parallel trigger)
-        case graveOption = 11 // Option+backtick -> native Cmd+backtick (cycle app windows)
+        case hideOthers = 10 // Cmd+Opt+H - hide all apps except the frontmost
+        case shiftTab = 11  // Cmd+Shift+Tab - activate in reverse/previous
+        case m = 12         // Cmd+M - minimize every window of the selected app
+        case comma = 13     // Cmd+, - open Preferences (the macOS-wide convention)
+        case showAll = 14   // Cmd+Opt+Tab - open/expand the full uncapped list
+        case tabOption = 15 // Option+Tab - activate/next (parallel trigger)
+        case shiftTabOption = 16 // Option+Shift+Tab - activate in reverse/previous
+        case graveOption = 17 // Option+backtick -> native Cmd+backtick (cycle app windows)
     }
 
     // Map hotkey IDs to key codes for delegate
@@ -92,6 +129,8 @@ class HotkeyManager {
         HotkeyID.tab.rawValue: UInt16(kVK_Tab),
         HotkeyID.h.rawValue: UInt16(kVK_ANSI_H),
         HotkeyID.q.rawValue: UInt16(kVK_ANSI_Q),
+        HotkeyID.m.rawValue: UInt16(kVK_ANSI_M),
+        HotkeyID.comma.rawValue: UInt16(kVK_ANSI_Comma),
         HotkeyID.leftArrow.rawValue: UInt16(kVK_LeftArrow),
         HotkeyID.rightArrow.rawValue: UInt16(kVK_RightArrow),
         HotkeyID.upArrow.rawValue: UInt16(kVK_UpArrow),
@@ -108,31 +147,38 @@ class HotkeyManager {
         kVK_ANSI_A, kVK_ANSI_S, kVK_ANSI_D, kVK_ANSI_F, kVK_ANSI_G, kVK_ANSI_Z,
         kVK_ANSI_X, kVK_ANSI_C, kVK_ANSI_V, kVK_ANSI_B, kVK_ANSI_W, kVK_ANSI_E,
         kVK_ANSI_R, kVK_ANSI_Y, kVK_ANSI_T, kVK_ANSI_O, kVK_ANSI_U, kVK_ANSI_I,
-        kVK_ANSI_P, kVK_ANSI_L, kVK_ANSI_J, kVK_ANSI_K, kVK_ANSI_N, kVK_ANSI_M,
+        kVK_ANSI_P, kVK_ANSI_L, kVK_ANSI_J, kVK_ANSI_K, kVK_ANSI_N,
         kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
         kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9,
         kVK_ANSI_Minus, kVK_ANSI_Equal, kVK_ANSI_LeftBracket, kVK_ANSI_RightBracket,
-        kVK_ANSI_Backslash, kVK_ANSI_Semicolon, kVK_ANSI_Quote, kVK_ANSI_Comma,
+        kVK_ANSI_Backslash, kVK_ANSI_Semicolon, kVK_ANSI_Quote,
         kVK_ANSI_Period, kVK_ANSI_Slash, kVK_ANSI_Grave,
         kVK_Space, kVK_Delete, kVK_ForwardDelete,
     ]
 
     func stop() {
-        // Unregister tab hotkeys (Cmd+Tab and Option+Tab)
         if let ref = tabHotKeyRef {
             UnregisterEventHotKey(ref)
             tabHotKeyRef = nil
+        }
+        if let ref = shiftTabHotKeyRef {
+            UnregisterEventHotKey(ref)
+            shiftTabHotKeyRef = nil
         }
         if let ref = tabOptionHotKeyRef {
             UnregisterEventHotKey(ref)
             tabOptionHotKeyRef = nil
         }
+        if let ref = shiftTabOptionHotKeyRef {
+            UnregisterEventHotKey(ref)
+            shiftTabOptionHotKeyRef = nil
+        }
         if let ref = graveOptionHotKeyRef {
             UnregisterEventHotKey(ref)
             graveOptionHotKeyRef = nil
         }
+        unregisterShowAllHotkey()
 
-        // Unregister active hotkeys
         unregisterActiveHotkeys()
 
         if let handler = hotKeyPressedHandler {
@@ -144,9 +190,12 @@ class HotkeyManager {
             self.eventTap = nil
         }
         // Stop the dedicated event-tap thread's run loop so the thread can exit
-        if let runLoop = eventTapRunLoop {
-            CFRunLoopStop(runLoop)
-            eventTapRunLoop = nil
+        stateQueue.sync {
+            _tapStopRequested = true
+            if let runLoop = _eventTapRunLoop {
+                CFRunLoopStop(runLoop)
+                _eventTapRunLoop = nil
+            }
         }
         eventTapThread = nil
     }
@@ -163,6 +212,8 @@ class HotkeyManager {
         let hotkeys: [(HotkeyID, Int)] = [
             (.h, kVK_ANSI_H),
             (.q, kVK_ANSI_Q),
+            (.m, kVK_ANSI_M),
+            (.comma, kVK_ANSI_Comma),
             (.leftArrow, kVK_LeftArrow),
             (.rightArrow, kVK_RightArrow),
             (.upArrow, kVK_UpArrow),
@@ -178,11 +229,26 @@ class HotkeyManager {
             activeHotKeyRefs.append(ref)
         }
 
-        // Swallow every other ordinary Cmd+<key> combo so it doesn't leak to the
-        // app behind the panel. These ids are absent from `hotkeyToKeyCode`, so the
-        // Carbon handler no-ops them — registration alone consumes the keystroke.
-        // The 0x1000 offset keeps the ids clear of the action ids (1–9).
+        // Cmd+Opt+H — hide all apps except the frontmost (macOS "Hide Others"), to
+        // declutter the switcher. Registered separately because it needs the option
+        // modifier, and distinct from Cmd+H (hide selected). Only registered while the
+        // panel is open, so native Hide-Others works normally elsewhere. Unlike Shift,
+        // Option isn't watched by the tap, so there's no select-previous side effect.
+        // Deliberately NOT modKey-based: the combo is the same either way, since the
+        // session holds one of Cmd/Option and this adds the other.
+        var hideOthersRef: EventHotKeyRef?
+        let hideOthersId = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.hideOthers.rawValue)
+        RegisterEventHotKey(UInt32(kVK_ANSI_H), UInt32(cmdKey | optionKey), hideOthersId, eventTarget, UInt32(kEventHotKeyNoOptions), &hideOthersRef)
+        activeHotKeyRefs.append(hideOthersRef)
+
+        // These ids are absent from `hotkeyToKeyCode`, so the Carbon handler no-ops
+        // them — registration alone consumes the keystroke. The 0x1000 offset keeps
+        // them clear of the action ids (1–17).
         for keyCode in HotkeyManager.swallowKeyCodes {
+            // Backtick is the one exception during an Option session: Option+backtick
+            // is already registered globally as the window-cycle hotkey, and Carbon
+            // will not hand the same key+modifier pair to two registrations.
+            if activeModifier == .option && keyCode == kVK_ANSI_Grave { continue }
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: HotkeyManager.signature, id: UInt32(0x1000 + keyCode))
             RegisterEventHotKey(UInt32(keyCode), modKey, id, eventTarget, UInt32(kEventHotKeyNoOptions), &ref)
@@ -266,7 +332,6 @@ class HotkeyManager {
                 let manager = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
 
                 if id.id == HotkeyID.tab.rawValue || id.id == HotkeyID.tabOption.rawValue {
-                    // Cmd+Tab / Option+Tab - activate switcher or select next.
                     // On the activating press (idle → active), record which modifier
                     // the user is holding so release-detection watches the right key.
                     if !manager.isActive {
@@ -277,11 +342,35 @@ class HotkeyManager {
                     DispatchQueue.main.async {
                         manager.delegate?.hotkeyTriggered()
                     }
+                } else if id.id == HotkeyID.shiftTab.rawValue
+                            || id.id == HotkeyID.shiftTabOption.rawValue {
+                    // Marks the Shift hold so its release isn't also treated as a
+                    // bare Shift tap, which would double-step.
+                    if !manager.isActive {
+                        manager.activeModifier =
+                            (id.id == HotkeyID.shiftTabOption.rawValue) ? .option : .command
+                    }
+                    manager.isActive = true
+                    manager.noteShiftTabHotkey()
+                    DispatchQueue.main.async {
+                        manager.delegate?.hotkeyTriggeredReverse()
+                    }
                 } else if id.id == HotkeyID.graveOption.rawValue {
                     // Option+backtick: cycle the frontmost app's windows, mirroring
                     // the native Cmd+backtick behaviour.
                     DispatchQueue.main.async {
                         manager.cycleFrontmostAppWindows()
+                    }
+                } else if id.id == HotkeyID.showAll.rawValue {
+                    manager.isActive = true
+                    DispatchQueue.main.async {
+                        manager.delegate?.hotkeyTriggeredShowAll()
+                    }
+                } else if id.id == HotkeyID.hideOthers.rawValue {
+                    // Cmd+Opt+H - hide others. Its own path so it isn't misrouted to
+                    // keyPressed(H), which hides only the selected app.
+                    DispatchQueue.main.async {
+                        manager.delegate?.hideOthersRequested()
                     }
                 } else {
                     // Other hotkeys (H, Q, arrows, etc.) - only registered when active
@@ -298,17 +387,34 @@ class HotkeyManager {
         let userDataPtr = Unmanaged.passUnretained(self).toOpaque()
         InstallEventHandler(eventTarget, handler, eventTypes.count, &eventTypes, userDataPtr, &hotKeyPressedHandler)
 
-        // Register both global triggers at startup: Cmd+Tab and Option+Tab. The
-        // panel-only hotkeys are registered later, when the panel becomes active.
+        // Only register Cmd+Tab / Cmd+Shift+Tab at startup - other hotkeys
+        // registered when panel is active. Carbon hotkeys need an exact modifier
+        // match, so the Shift variant must be its own registration — without it,
+        // Cmd+Shift+Tab (whose native handler we disable) would do nothing.
         let id = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.tab.rawValue)
         RegisterEventHotKey(UInt32(kVK_Tab), UInt32(cmdKey), id, eventTarget, UInt32(kEventHotKeyNoOptions), &tabHotKeyRef)
+        let shiftId = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.shiftTab.rawValue)
+        RegisterEventHotKey(UInt32(kVK_Tab), UInt32(cmdKey | shiftKey), shiftId, eventTarget, UInt32(kEventHotKeyNoOptions), &shiftTabHotKeyRef)
 
-        let optionID = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.tabOption.rawValue)
-        RegisterEventHotKey(UInt32(kVK_Tab), UInt32(optionKey), optionID, eventTarget, UInt32(kEventHotKeyNoOptions), &tabOptionHotKeyRef)
+        // The Option mirror of the two Tab triggers. Same exact-match reasoning as
+        // the Shift variant above: each modifier combination needs its own
+        // registration, so Option+Tab and Option+Shift+Tab are registered here
+        // rather than derived at dispatch time.
+        let optionId = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.tabOption.rawValue)
+        RegisterEventHotKey(UInt32(kVK_Tab), UInt32(optionKey), optionId, eventTarget, UInt32(kEventHotKeyNoOptions), &tabOptionHotKeyRef)
+        let optionShiftId = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.shiftTabOption.rawValue)
+        RegisterEventHotKey(UInt32(kVK_Tab), UInt32(optionKey | shiftKey), optionShiftId, eventTarget, UInt32(kEventHotKeyNoOptions), &shiftTabOptionHotKeyRef)
 
         // Option+backtick mirrors Cmd+backtick (macOS "cycle the front app's windows").
-        let graveID = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.graveOption.rawValue)
-        RegisterEventHotKey(UInt32(kVK_ANSI_Grave), UInt32(optionKey), graveID, eventTarget, UInt32(kEventHotKeyNoOptions), &graveOptionHotKeyRef)
+        let graveId = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.graveOption.rawValue)
+        RegisterEventHotKey(UInt32(kVK_ANSI_Grave), UInt32(optionKey), graveId, eventTarget, UInt32(kEventHotKeyNoOptions), &graveOptionHotKeyRef)
+
+        // ⌥⌘Tab is the recent-apps cap's escape hatch; a Carbon hotkey steals the
+        // combo system-wide, so don't squat it for users who never enable the cap.
+        // Live pref flips re/unregister via AppDelegate's onToggleLimitRecent wiring.
+        if Preferences.limitRecentApps {
+            registerShowAllHotkey()
+        }
     }
 
     /// Cycle to another window of the frontmost app, mirroring macOS's native
@@ -338,8 +444,26 @@ class HotkeyManager {
         AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
     }
 
+    /// Register the global Cmd+Opt+Tab hotkey (show the full uncapped list).
+    /// Guarded on the Carbon handler being installed — registering earlier (the
+    /// Preferences toggle firing before Accessibility is granted) would consume
+    /// ⌥⌘Tab system-wide with nothing listening. Idempotent.
+    func registerShowAllHotkey() {
+        guard hotKeyPressedHandler != nil, showAllHotKeyRef == nil else { return }
+        let id = EventHotKeyID(signature: HotkeyManager.signature, id: HotkeyID.showAll.rawValue)
+        RegisterEventHotKey(UInt32(kVK_Tab), UInt32(cmdKey | optionKey), id,
+                            GetEventDispatcherTarget(), UInt32(kEventHotKeyNoOptions), &showAllHotKeyRef)
+    }
+
+    /// Idempotent; a no-op if never registered.
+    func unregisterShowAllHotkey() {
+        if let ref = showAllHotKeyRef {
+            UnregisterEventHotKey(ref)
+            showAllHotKeyRef = nil
+        }
+    }
+
     // MARK: - Event Tap (for modifier release and mouse clicks only)
-    // Note: keyDown removed - using Carbon hotkeys instead (only requires Accessibility permission)
 
     /// Creates the CGEvent tap. Returns true on success (or if already created).
     /// Returns false when `CGEvent.tapCreate` fails — which happens when
@@ -350,8 +474,8 @@ class HotkeyManager {
         // Idempotent: never create a second tap / run-loop source.
         if eventTap != nil { return true }
 
-        // Only listen for flagsChanged and mouse clicks
-        // keyDown events require Input Monitoring permission, so we use Carbon hotkeys instead
+        // No keyDown: that would require Input Monitoring permission on top of
+        // Accessibility, so keys come from Carbon hotkeys instead.
         let eventMask = (1 << CGEventType.flagsChanged.rawValue) |
                         (1 << CGEventType.leftMouseDown.rawValue) |
                         (1 << CGEventType.rightMouseDown.rawValue)
@@ -366,26 +490,20 @@ class HotkeyManager {
             if type == .flagsChanged {
                 let flags = event.flags
 
-                // Track the modifier that started this session (Command or Option),
-                // not Command specifically, so Option+Tab holds/cycles/commits the
-                // same way Cmd+Tab does.
                 let shiftIsDown = flags.contains(.maskShift)
+                // The modifier that started this session, not Command specifically,
+                // so an Option session holds, cycles and commits identically. The
+                // kernel's parameter is named cmdDown for the common case; what it
+                // actually means is "the trigger modifier is still held".
                 let modIsDown = flags.contains(manager.activeModifier.eventFlag)
 
-                if modIsDown {
-                    if shiftIsDown && !manager.shiftWasDown {
-                        // Shift was just pressed while the trigger modifier is held
-                        DispatchQueue.main.async {
-                            manager.delegate?.shiftPressed()
-                        }
+                if manager.resolveShiftTap(cmdDown: modIsDown, shiftDown: shiftIsDown) == .selectPrevious {
+                    DispatchQueue.main.async {
+                        manager.delegate?.shiftTapped()
                     }
-                    manager.shiftWasDown = shiftIsDown
                 }
 
-                // Trigger modifier released → commit the selection and dismiss.
                 if !modIsDown {
-                    manager.shiftWasDown = false
-                    // Set inactive immediately
                     manager.isActive = false
                     DispatchQueue.main.async {
                         manager.delegate?.modifierKeyReleased()
@@ -393,14 +511,14 @@ class HotkeyManager {
                 }
             } else if type == .leftMouseDown || type == .rightMouseDown {
                 if manager.isActive {
-                    let location = event.location
                     DispatchQueue.main.async {
-                        manager.delegate?.mouseClicked(at: location)
+                        manager.delegate?.mouseClicked()
                     }
                     // NOTE: the tap is .listenOnly (so revoking Accessibility can
-                    // never freeze input), which means we CANNOT consume the click
-                    // — it also reaches whatever is under the cursor. Keyboard use
-                    // is unaffected; this only matters for click-to-dismiss.
+                    // never freeze input), which means we CANNOT consume the click.
+                    // Clicks outside the panel are swallowed by AppSwitcherPanel's
+                    // per-screen click shields instead; this callback stays the
+                    // primary dismiss/activate path.
                 }
             } else if type == .tapDisabledByUserInput || type == .tapDisabledByTimeout {
                 // Benign: macOS disables the tap after heavy input or a timeout —
@@ -435,15 +553,21 @@ class HotkeyManager {
         }
 
         // Service the tap on a dedicated, high-priority thread with its own run loop.
-        // Previously the source was added to the main run loop, so the Cmd-release
-        // callback competed with main-thread UI work (loading icons, building the
-        // panel). When that work ran long, macOS disabled the tap by timeout and the
-        // Cmd-up event was lost — leaving the switcher panel stuck open. A dedicated
-        // thread keeps the callback responsive regardless of what the UI is doing.
+        // On the main run loop the callback competes with UI work (loading icons,
+        // building the panel); when that work runs long, macOS disables the tap by
+        // timeout and the in-flight Cmd-up is lost, leaving the panel stuck open.
+        stateQueue.sync { _tapStopRequested = false }
         let thread = Thread { [weak self] in
+            guard let self = self else { return }
             let runLoopSource = CFMachPortCreateRunLoopSource(nil, eventTap, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-            self?.eventTapRunLoop = CFRunLoopGetCurrent()
+            // Store the run loop and check for an early stop() in one critical
+            // section, so a stop can never fall between the two.
+            let shouldRun: Bool = self.stateQueue.sync {
+                self._eventTapRunLoop = CFRunLoopGetCurrent()
+                return !self._tapStopRequested
+            }
+            guard shouldRun else { return }
             CGEvent.tapEnable(tap: eventTap, enable: true)
             print("Event tap created successfully")
             CFRunLoopRun()

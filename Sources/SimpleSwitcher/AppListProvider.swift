@@ -1,4 +1,5 @@
 import Cocoa
+import SwitcherKernels
 
 struct AppInfo {
     let app: NSRunningApplication
@@ -18,12 +19,8 @@ class AppListProvider {
         guard !isObserving else { return }
         isObserving = true
 
-        // Initialize with current frontmost app
-        if let frontApp = NSWorkspace.shared.frontmostApplication {
-            updateMRU(frontApp.processIdentifier)
-        }
+        seedMRU()
 
-        // Observe app activation
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -34,7 +31,6 @@ class AppListProvider {
             }
         }
 
-        // Observe app termination to clean up MRU
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil,
@@ -46,119 +42,191 @@ class AppListProvider {
         }
     }
 
+    /// Seed the MRU order at launch from window z-order.
+    ///
+    /// Only activations that happen while Switcher is running feed `mruOrder`, so
+    /// without a seed exactly one app has a rank and every other ties at `Int.max`
+    /// in `sortByMRU` — an arbitrary tail. Invisible while the switcher lists
+    /// everything; under `limitRecentApps` it decides which apps are reachable at
+    /// all, and it would reset on every relaunch.
+    ///
+    /// ponytail: CGWindowList's front-to-back order is a *proxy* for recency, not
+    /// a record of it — accurate for the current Space, weaker across Spaces, and
+    /// blind to anything used before the last window raise. macOS keeps no
+    /// queryable activation history, so this is the best available signal; the
+    /// ceiling is one launch, since real activations replace it from the first
+    /// Cmd+Tab onward. Upgrade path: persist `mruOrder` across launches.
+    private static func seedMRU() {
+        let owners = classifyWindows().windows
+            .filter { $0.onScreen && $0.keepsAppListed }
+            .map { $0.pid }
+        mruOrder = RecentApps.orderedUnique(pids: owners,
+                                            frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+    }
+
     /// Update MRU order when an app is activated
     private static func updateMRU(_ pid: pid_t) {
-        // Remove if already in list
         mruOrder.removeAll { $0 == pid }
-        // Add to front
         mruOrder.insert(pid, at: 0)
-        // Keep list reasonable size
         if mruOrder.count > 50 {
             mruOrder.removeLast()
         }
     }
 
-    /// Returns apps that should be shown in the switcher
-    /// Shows apps that are:
-    /// - Regular apps (activationPolicy == .regular)
-    /// - Not hidden
-    /// - Have visible windows OR have a dock badge (notification)
+    /// The switcher's app list, MRU-ordered — what actually gets shown.
+    ///
+    /// With `limitRecentApps` on this is only the N most recently used apps and
+    /// everything older is dropped, including badged apps: a badge rescues an app
+    /// past the window filter, it does not exempt it from the cap, so a badged
+    /// Mail you haven't touched in an hour still falls off. That is what "the 5
+    /// most recently used" means, and the alternative would make N unpredictable.
+    ///
+    /// The cap lives here, at the single point every consumer funnels through —
+    /// panel open, the live refresh, and `--list-apps`.
     static func getVisibleApps() -> [AppInfo] {
-        // Get PIDs of apps that have at least one on-screen window
+        let apps = allVisibleApps()
+        guard Preferences.limitRecentApps else { return apps }
+        return Array(apps.prefix(max(1, Preferences.recentAppsLimit)))
+    }
+
+    /// Every app that passes the window/badge filter, MRU-ordered and uncapped. A
+    /// badge alone qualifies an app, so e.g. Mail with an unread count is here
+    /// even with no window at all. `--list-apps` reports from this, so it can show
+    /// what the cap cut rather than losing those apps.
+    static func allVisibleApps() -> [AppInfo] {
         let visiblePIDs = getVisibleWindowPIDs()
-
-        // Get dock badges for all running apps
-        let badges = getDockBadges()
-
-        // Get current app's PID to exclude self
+        let badges = getDockBadgesCached()
         let selfPID = ProcessInfo.processInfo.processIdentifier
 
-        // Filter running applications
         let apps = NSWorkspace.shared.runningApplications.compactMap { app -> AppInfo? in
-            // Only include regular apps (not background/accessory apps)
+            // .regular excludes background and accessory apps (which includes us).
             guard app.activationPolicy == .regular else { return nil }
 
-            // Exclude hidden apps
             guard !app.isHidden else { return nil }
 
-            // Exclude self
             guard app.processIdentifier != selfPID else { return nil }
 
-            // Get badge for this app (if any)
             let badge = badges[app.bundleIdentifier ?? ""]
 
-            // Include apps that have visible windows OR have a badge
             let hasVisibleWindow = visiblePIDs.contains(app.processIdentifier)
             let hasBadge = badge != nil
 
             guard hasVisibleWindow || hasBadge else { return nil }
 
-            // Get app info
+            // Get app info. The icon's logical size is left alone: AppItemView
+            // sizes it via constraints (mutating app.icon would touch a shared
+            // NSImage), and the reps carry the resolution regardless.
             let name = app.localizedName ?? "Unknown"
             let icon = app.icon ?? NSImage(named: NSImage.applicationIconName) ?? NSImage()
-            icon.size = NSSize(width: 64, height: 64)
 
             return AppInfo(app: app, name: name, icon: icon, pid: app.processIdentifier, badge: badge)
         }
 
-        // Sort by MRU order
         return sortByMRU(apps)
     }
 
-    /// Gets PIDs of all apps with on-screen windows across all spaces
-    /// Includes fullscreen windows and windows on other spaces
+    /// PIDs of apps owning at least one window that counts as switchable —
+    /// including fullscreen windows and windows on other Spaces, which
+    /// CGWindowList reports as off-screen.
+    ///
+    /// The accept/reject rule itself lives in `WindowFilter`; this does the query
+    /// and the collection. Windows accepted by the OFF-SCREEN branch get a second
+    /// pass: CGWindowList cannot tell an other-Space window from a minimized one
+    /// (`WindowFilterSpecs.md`), so their minimized state is read from the
+    /// WindowServer in one batched query (`MinimizedStateSpecs.md`). On-screen
+    /// windows are never touched by that pass, which is also what makes the
+    /// restore race benign.
     private static func getVisibleWindowPIDs() -> Set<pid_t> {
+        classifyWindows().pids
+    }
+
+    /// A window that survived the CGWindowList filter, with the branch that
+    /// accepted it and — for off-screen windows — the WindowServer's verdict.
+    struct AcceptedWindow {
+        let pid: pid_t
+        let ownerName: String
+        let wid: CGWindowID?
+        let onScreen: Bool
+        /// nil means "keeps its app listed": an on-screen window, or an
+        /// off-screen one the WindowServer says is a real window elsewhere.
+        var rejection: MinimizedState.Verdict?
+
+        var keepsAppListed: Bool { rejection == nil }
+    }
+
+    /// Shared by `getVisibleWindowPIDs` and the `--list-apps` diagnostic, so the
+    /// two can never drift apart.
+    static func classifyWindows() -> (pids: Set<pid_t>, windows: [AcceptedWindow]) {
         guard let windowList = CGWindowListCopyWindowInfo([.excludeDesktopElements, .optionAll], kCGNullWindowID) as? [[String: Any]] else {
-            return []
+            return ([], [])
         }
 
-        var pids = Set<pid_t>()
+        var accepted: [AcceptedWindow] = []
         for window in windowList {
-            // Get window layer - layer 0 is normal windows
-            // Negative layers are below desktop, high positive layers are system UI
-            let layer = window[kCGWindowLayer as String] as? Int ?? 0
+            let raw = RawWindow(cgWindowInfo: window)
+            guard case .accept(let onScreen) = WindowFilter.verdict(for: raw),
+                  let pid = raw.ownerPID else { continue }
+            accepted.append(AcceptedWindow(pid: pid, ownerName: raw.ownerName ?? "",
+                                           wid: raw.windowID, onScreen: onScreen))
+        }
 
-            // Accept normal windows (layer 0) and some special cases
-            // Layer 0: normal windows
-            // Layer < 0: below desktop (skip)
-            // Layer 3: screensaver/fullscreen video (some apps)
-            // Layer > 20: system UI elements like menubar, dock (skip)
-            if layer < 0 || layer > 20 {
-                continue
-            }
-
-            // Check bounds - skip windows with no size (menus, tooltips, etc.)
-            if let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] {
-                let width = bounds["Width"] ?? 0
-                let height = bounds["Height"] ?? 0
-                // Minimum size to be considered a real window
-                if width < 50 || height < 50 {
-                    continue
+        if Preferences.hideMinimizedOnlyApps {
+            let candidates = accepted.filter { !$0.onScreen }.compactMap { $0.wid }
+            if !candidates.isEmpty {
+                let rejected = MinimizedState.rejectedWids(among: candidates,
+                                                           states: queryWindowServer(candidates))
+                for index in accepted.indices where !accepted[index].onScreen {
+                    if let wid = accepted[index].wid {
+                        accepted[index].rejection = rejected[wid]
+                    }
                 }
-            } else {
-                continue
-            }
-
-            // Check if window is on screen OR if it has valid bounds (for other spaces)
-            // Windows on other spaces have isOnScreen = false but still valid
-            let isOnScreen = window[kCGWindowIsOnscreen as String] as? Bool ?? false
-
-            // For windows not on current screen, check if they're just on another space
-            // by verifying they have a valid owner name (real app, not system process)
-            if !isOnScreen {
-                // Skip if no owner name (likely system window)
-                guard let ownerName = window[kCGWindowOwnerName as String] as? String,
-                      !ownerName.isEmpty else {
-                    continue
-                }
-            }
-
-            if let pid = window[kCGWindowOwnerPID as String] as? pid_t {
-                pids.insert(pid)
             }
         }
 
-        return pids
+        // An app stays listed if ANY of its windows survived.
+        let pids = Set(accepted.filter { $0.keepsAppListed }.map { $0.pid })
+        return (pids, accepted)
+    }
+
+    /// One batched `SLSWindowQueryWindows` for the given wids. Impure (Mach IPC),
+    /// so it has no Specs/Tests triad — the pure decode it feeds does.
+    ///
+    /// Returns an empty dictionary on any failure, which `MinimizedState` treats
+    /// as "nothing is minimized", i.e. exactly today's behavior. Every step here
+    /// must fail open: a macOS change may cost us the filtering, never an app.
+    private static func queryWindowServer(_ wids: [CGWindowID]) -> [CGWindowID: WsRawWindow] {
+        guard !wids.isEmpty else { return [:] }
+
+        let result = SLSWindowQueryWindows(CGSMainConnectionID(), wids as CFArray, Int32(wids.count))
+            .takeRetainedValue()
+        let iterator = SLSWindowQueryResultCopyWindows(result).takeRetainedValue()
+
+        var states: [CGWindowID: WsRawWindow] = [:]
+        states.reserveCapacity(wids.count)
+        while SLSWindowIteratorAdvance(iterator) {
+            let wid = SLSWindowIteratorGetWindowID(iterator)
+            states[wid] = WsRawWindow(wid: wid,
+                                      attributes: SLSWindowIteratorGetAttributes(iterator),
+                                      tags: SLSWindowIteratorGetTags(iterator))
+        }
+        return states
+    }
+
+    // The badge scan walks the Dock's AX tree — several IPC round-trips per dock
+    // item, on the main thread. getVisibleApps runs on every Cmd+Tab press AND
+    // every 300ms while the panel is open (AppDelegate's live refresh), so cache
+    // the result briefly instead of re-walking each time. Badges changing within
+    // the TTL just show ~2s late on the next open — invisible in practice.
+    private static var badgeCache: (badges: [String: String], at: Date)?
+    private static let badgeCacheTTL: TimeInterval = 2.0
+
+    private static func getDockBadgesCached() -> [String: String] {
+        if let cache = badgeCache, Date().timeIntervalSince(cache.at) < badgeCacheTTL {
+            return cache.badges
+        }
+        let fresh = getDockBadges()
+        badgeCache = (fresh, Date())
+        return fresh
     }
 
     /// Gets dock badges (notification counts) for running apps
@@ -173,7 +241,6 @@ class AppListProvider {
 
         let dockElement = AXUIElementCreateApplication(dockApp.processIdentifier)
 
-        // Get Dock's children
         var childrenValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(dockElement, kAXChildrenAttribute as CFString, &childrenValue) == .success,
               let children = childrenValue as? [AXUIElement] else {
@@ -189,16 +256,13 @@ class AppListProvider {
                 continue
             }
 
-            // Get list children (dock items)
             var listChildrenValue: CFTypeRef?
             guard AXUIElementCopyAttributeValue(child, kAXChildrenAttribute as CFString, &listChildrenValue) == .success,
                   let listChildren = listChildrenValue as? [AXUIElement] else {
                 continue
             }
 
-            // Check each dock item
             for dockItem in listChildren {
-                // Get subrole - must be application dock item
                 var subroleValue: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(dockItem, kAXSubroleAttribute as CFString, &subroleValue) == .success,
                       let subrole = subroleValue as? String,
@@ -206,7 +270,6 @@ class AppListProvider {
                     continue
                 }
 
-                // Check if app is running
                 var isRunningValue: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(dockItem, "AXIsApplicationRunning" as CFString, &isRunningValue) == .success,
                       let isRunning = isRunningValue as? Bool,
@@ -214,7 +277,6 @@ class AppListProvider {
                     continue
                 }
 
-                // Get the badge label (AXStatusLabel)
                 var statusLabelValue: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(dockItem, "AXStatusLabel" as CFString, &statusLabelValue) == .success,
                       let statusLabel = statusLabelValue as? String,
@@ -229,7 +291,6 @@ class AppListProvider {
                     continue
                 }
 
-                // Get bundle identifier from the app URL
                 if let bundle = Bundle(url: url),
                    let bundleId = bundle.bundleIdentifier {
                     badges[bundleId] = statusLabel
@@ -238,6 +299,73 @@ class AppListProvider {
         }
 
         return badges
+    }
+
+    /// `--list-apps`: print what the switcher would show and why, then exit.
+    /// Window filtering is invisible in the UI — an app is either there or it
+    /// isn't — so this is how a "why is X missing / why is X still here" report
+    /// gets diagnosed without guessing.
+    static func printAppListDiagnostic() {
+        Preferences.registerDefaults()
+        startObserving()  // seeds mruOrder, or every app ties and "MRU order" is a lie
+        // Two snapshots a moment apart (allVisibleApps runs its own). Fine for a
+        // diagnostic; a window opening between them just shows as a mismatch.
+        let (_, windows) = classifyWindows()
+        // Deliberately the UNCAPPED list: apps cut by the recent-apps limit are
+        // shown below a cut line instead of falling into EXCLUDED, where they
+        // would be reported as "hidden / not a regular app" — a plain lie, and
+        // this is the tool for answering "why is X missing".
+        let apps = allVisibleApps()
+        let listed = Set(apps.map { $0.pid })
+        let cutoff = Preferences.limitRecentApps ? max(1, Preferences.recentAppsLimit) : Int.max
+
+        print("hideMinimizedOnlyApps: \(Preferences.hideMinimizedOnlyApps)")
+        print("limitRecentApps: \(Preferences.limitRecentApps)"
+              + (Preferences.limitRecentApps ? " (\(Preferences.recentAppsLimit) apps)" : ""))
+        print("accepted windows: \(windows.count) (\(windows.filter { $0.onScreen }.count) on-screen, "
+              + "\(windows.filter { !$0.onScreen && $0.keepsAppListed }.count) off-screen kept, "
+              + "\(windows.filter { $0.rejection == .minimized }.count) minimized-rejected, "
+              + "\(windows.filter { $0.rejection == .notSwitchable }.count) helper-windows)\n")
+
+        let byPID = Dictionary(grouping: windows, by: { $0.pid })
+        print("SWITCHER LIST (\(min(apps.count, cutoff)) apps, MRU order):")
+        for (index, app) in apps.enumerated() {
+            if index == cutoff {
+                print("  ── recent-apps limit (\(cutoff)) — everything below is NOT shown ──")
+            }
+            let mine = byPID[app.pid] ?? []
+            let verdict: String
+            if mine.contains(where: { $0.onScreen }) {
+                verdict = "visible"
+            } else if mine.contains(where: { $0.keepsAppListed }) {
+                verdict = "other-Space"
+            } else if app.badge != nil {
+                verdict = "badge-rescued"
+            } else {
+                verdict = "listed (no surviving window?)"
+            }
+            let badge = app.badge.map { " badge=\($0)" } ?? ""
+            print("  \(app.name.padding(toLength: 28, withPad: " ", startingAt: 0)) \(verdict)\(badge)")
+        }
+
+        // Apps that owned windows but did not make the list — the interesting half.
+        let excluded = byPID.filter { !listed.contains($0.key) }
+        if !excluded.isEmpty {
+            print("\nEXCLUDED (owned accepted windows but not listed):")
+            for (pid, mine) in excluded {
+                let name = mine.first?.ownerName ?? "pid \(pid)"
+                let reason: String
+                if mine.contains(where: { $0.rejection == .minimized }) {
+                    let helpers = mine.filter { $0.rejection == .notSwitchable }.count
+                    reason = "minimized-rejected" + (helpers > 0 ? " (+\(helpers) helper-windows)" : "")
+                } else if mine.allSatisfy({ $0.rejection == .notSwitchable }) {
+                    reason = "only helper-windows"
+                } else {
+                    reason = "hidden / not a regular app / self"
+                }
+                print("  \(name.padding(toLength: 28, withPad: " ", startingAt: 0)) \(reason)")
+            }
+        }
     }
 
     /// Sort apps by MRU order (most recently used first)
