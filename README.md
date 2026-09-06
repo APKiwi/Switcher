@@ -58,7 +58,7 @@ cp -R Switcher.app /Applications/
 
 Until you grant permission, Switcher **leaves your native Cmd+Tab working** and waits, so it can never get stuck. You can quit any time from its menu bar icon (⌘ → Quit).
 
-> Switcher is ad-hoc signed, so rebuilding/replacing the app can invalidate a previous grant — just remove and re-add it under Accessibility.
+> The grant survives rebuilds, since the build signs with a stable local identity. If that identity is missing the build falls back to ad-hoc signing and says so, and then you do need to remove and re-add Switcher under Accessibility after a rebuild.
 
 ### Stopping Switcher
 

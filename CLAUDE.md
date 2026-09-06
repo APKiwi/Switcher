@@ -2,6 +2,12 @@
 
 A minimal Cmd+Tab replacement for macOS. Shows only apps with visible windows, ordered by most recently used.
 
+**This repo is `APKiwi/Switcher`, a fork of [fad1/Switcher](https://github.com/fad1/Switcher)
+(`upstream`).** It adds Option+Tab and Option+Shift+Tab as parallel triggers, Option+backtick
+window cycling, signing with a stable local identity so Accessibility grants survive rebuilds,
+and it carries no donation surface. Everything else tracks upstream, last merged at its 1.3.0.
+Fork-only behaviour is marked "(fork-only)" where it appears below.
+
 ## Project Overview
 
 Switcher intercepts the native Cmd+Tab hotkey and displays a custom switcher panel. It filters out:
@@ -238,11 +244,11 @@ also why `Preferences.registerDefaults()` must run *before* `startObserving()` i
 
 ## Build & Run
 
-> **Use `--disable-sandbox` flag** when building from Claude Code or Sandvault. SPM internally uses `sandbox-exec` which conflicts with the environment sandbox. This is safe — the environment already provides OS-level sandboxing.
+> **Use the `--disable-sandbox` flag** when building from Claude Code. SPM internally uses `sandbox-exec`, which conflicts with the environment sandbox. This is safe, since the environment already provides OS-level sandboxing.
 
 ### Development
 ```bash
-cd /Users/fahd/Claude/_Constantinapple/SimpleSwitcher
+cd ~/Switcher
 swift build --disable-sandbox
 swift run --disable-sandbox SwitcherKernelsTests   # kernel tests; see Kernels & tests
 .build/debug/SimpleSwitcher
@@ -312,7 +318,7 @@ Every other ordinary Cmd+&lt;key&gt; combo is registered as a no-op while the pa
 
 1. **No window thumbnails** - Would require Screen Recording permission
 2. **No per-window switching** - Shows apps, not individual windows
-3. **Ad-hoc signed only** - Not notarized, may trigger Gatekeeper warning on first run
+3. **Locally signed, not notarized** - signed with the self-signed "AP Kiwi Local Signing" identity, so Gatekeeper still warns on a fresh download. Distribution is not a goal here: the app is built from source on the machine that runs it
 4. **Private API usage** - CGSSetSymbolicHotKeyEnabled may break in future macOS
 5. **Undocumented WindowServer bits** - the minimized filter reads tag bit 60, measured not documented. Re-diff on every major macOS (`MinimizedStateSpecs.md`); it fails open, so a shift means minimized-only apps reappear rather than apps going missing
 
@@ -324,42 +330,54 @@ The CGEvent tap callback runs on a separate thread from the main UI thread. In r
 2. State is set **synchronously** in event handlers, before any async delegate calls
 3. This ensures the event tap sees the correct state even with aggressive compiler optimizations
 
-## Releasing a New Version
+## Versioning and Releases
 
-When creating a new release:
+This fork publishes **no GitHub releases and no Homebrew tap**. Upstream does both, and its
+`switcher` cask installs upstream's build, not this one. The only install path here is building
+from source, either by hand or via `first-install.sh` in the dotfiles repo, which clones this
+repo, runs `build-app.sh release`, and copies the bundle into `/Applications`.
 
-1. **Build and create release zip:**
+So a "release" is just a tag on `main`. The version itself lives in one place, `Info.plist`
+(`CFBundleVersion` and `CFBundleShortVersionString`, kept equal), and the Preferences window
+reads it from the bundle.
+
+**Bump once per batch of work, not once per change.** If the current version is already tagged,
+bump it once, then leave the new version untagged so later work rides it. If it is already ahead
+of the newest tag, it is staged, so add to it and leave the number alone.
+
+**Tagging is on request only.** When it is time:
+
 ```bash
 swift run --disable-sandbox SwitcherKernelsTests   # must pass first
 swift build -c release --disable-sandbox
-./create-icon.sh
 ./build-app.sh release
-zip -r Switcher.zip Switcher.app
+git tag -a v1.x.x -m "Switcher v1.x.x
+
+<what landed>"
+git push origin v1.x.x
 ```
 
-2. **Create GitHub release:**
+Then install the build that came from the main checkout, not from a worktree:
+
 ```bash
-gh release create v1.x.x Switcher.zip --title "Switcher v1.x.x" --notes "Release notes here"
+osascript -e 'tell application "Switcher" to quit'
+rm -rf /Applications/Switcher.app && cp -R ~/Switcher/Switcher.app /Applications/
+open -a /Applications/Switcher.app
 ```
 
-3. **Update Homebrew tap:**
-```bash
-# Get SHA256 of new release
-curl -sL https://github.com/fad1/Switcher/releases/download/v1.x.x/Switcher.zip | shasum -a 256
+### Merging from upstream
 
-# Update tap repo at /Users/fahd/Claude/homebrew-tap
-# Edit Casks/switcher.rb: update version and sha256
-cd /Users/fahd/Claude/homebrew-tap
-# Update version and sha256 in Casks/switcher.rb
-git add . && git commit -m "Update Switcher to v1.x.x" && git push
-```
+`upstream` is fad1's repo. Two things bite every time:
 
-4. **Clean up:**
-```bash
-rm Switcher.zip
-```
-
-**Homebrew tap repo:** https://github.com/fad1/homebrew-tap
+- **The donation surface comes back.** The nag in `AppDelegate`, the menu item in
+  `StatusBarController`, the button in `PreferencesWindowController`, and `launchCount` /
+  `hasDonated` / `donateURL` / `openDonatePage()` in `Preferences`. Strip all of it.
+- **`HotkeyManager` wants porting, not merging.** Upstream reworks the same functions the
+  Option triggers touch, and its `HotkeyID` numbering has collided with the fork's before. Take
+  upstream's file whole and re-apply the fork's changes on top, keeping the fork's ids above
+  upstream's highest. Any hotkey upstream adds inside `registerActiveHotkeys()` must register
+  under `activeModifier.carbonKey`, not a hardcoded `cmdKey`, or it will be dead during an
+  Option session.
 
 ## Potential Improvements
 
@@ -371,12 +389,12 @@ rm Switcher.zip
 - [ ] Window thumbnails (requires Screen Recording permission)
 - [x] Preferences window (menu bar icon, grayscale, declutter tip). Basic. Shortcuts are still code-only.
 - [x] App icon (via create-icon.sh)
-- [ ] Full code signing and notarization (currently ad-hoc signed)
+- [ ] Full Developer ID signing and notarization (only needed if this is ever distributed rather than built locally)
 - [ ] Handle fullscreen apps better
 
 ## References
 
-The [AltTab](https://github.com/lwouis/alt-tab-macos) codebase (located at `/Users/fahd/Claude/_reference/alt-tab-macos`) is an excellent reference for:
+The [AltTab](https://github.com/lwouis/alt-tab-macos) codebase is an excellent reference for:
 - CGEvent tap patterns and threading
 - Private API usage (`CGSSetSymbolicHotKeyEnabled`, etc.)
 - Window listing and filtering
@@ -388,7 +406,7 @@ Since Apple's documentation for these low-level APIs is sparse or nonexistent, A
 ## Troubleshooting
 
 ### Switcher doesn't intercept Cmd+Tab (no Accessibility permission)
-This is now handled gracefully: the app leaves native Cmd+Tab working and polls for the grant. Enable Switcher under System Settings > Privacy & Security > Accessibility and it takes over within ~1s — no relaunch needed. Because the app is ad-hoc signed, rebuilding it can invalidate a prior grant (remove + re-add the entry).
+This is now handled gracefully: the app leaves native Cmd+Tab working and polls for the grant. Enable Switcher under System Settings > Privacy & Security > Accessibility and it takes over within ~1s, no relaunch needed. The grant survives rebuilds, because `build-app.sh` signs with the stable "AP Kiwi Local Signing" identity and TCC keys on the certificate rather than the per-build hash. If that identity is missing the script falls back to ad-hoc signing and says so, and in that case a rebuild does invalidate the grant (remove and re-add the entry).
 
 ### Native Cmd+Tab still works
 Either Accessibility isn't granted yet (see above — expected), or the app crashed via SIGKILL without restoring the hotkey. SIGTERM/SIGINT/crashes restore it automatically; for SIGKILL, run the app again and quit cleanly, or log out/restart.
