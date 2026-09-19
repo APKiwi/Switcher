@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+sh Scripts/check-agent-instructions.sh

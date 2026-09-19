@@ -123,7 +123,7 @@ defaults delete com.simpleswitcher.app grayscaleIcons             # revert
 - CGEvent tap for modifier detection
 - Private `CGSSetSymbolicHotKeyEnabled` API to intercept native Cmd+Tab
 
-See [CLAUDE.md](CLAUDE.md) for architecture details.
+See [Switcher architecture](docs/ARCHITECTURE.md) for architecture details.
 
 ## Philosophy
 

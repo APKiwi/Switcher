@@ -18,8 +18,9 @@ AppIcon.icns
 .icon_generator
 .icon_generator.swift
 
-# Claude Code
-.claude/
+# Agent local state
+.claude/*
+!.claude/settings.json
 
 # Release script (local only)
 release.sh

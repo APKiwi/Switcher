@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Wiring repository hooks",
+            "command": "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; git -C \"$root\" config core.hooksPath .githooks"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; perl \"$root/Scripts/hooks/agent-instruction-guard.pl\""
+          }
+        ]
+      }
+    ]
+  }
+}
