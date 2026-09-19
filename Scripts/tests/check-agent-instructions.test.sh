@@ -1,7 +1,7 @@
 #!/bin/sh
 # Exercise the instruction budget with an isolated repository and index.
 set -eu
-script=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/check-agent-instructions.sh
+script=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)/check-agent-instructions.sh
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT HUP INT TERM
 git init -q "$fixture"

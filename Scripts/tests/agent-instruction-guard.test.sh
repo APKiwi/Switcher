@@ -1,7 +1,7 @@
 #!/bin/sh
 # Exercise Claude payloads and the native Codex apply_patch command payload.
 set -eu
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 helper="$root/Scripts/hooks/agent-instruction-guard.pl"
 claude_hooks="$root/.claude/settings.json"
 codex_hooks="$root/.codex/hooks.json"
