@@ -72,6 +72,18 @@ expect_decision "Codex Add File allows a small override" '' "$fixture" "$(payloa
 patch=$(perl -e 'print "*** Begin Patch\n*** Add File: AGENTS.override.md\n+", "x" x 17000, "\n*** End Patch"')
 expect_decision "Codex Add File blocks an oversized override" deny "$fixture" "$(payload_codex "$patch")"
 
+padded_patch=$(printf ' \n\t%s\n \t' "$patch")
+expect_decision "Codex trims a padded oversized patch command" deny "$fixture" \
+  "$(payload_codex "$padded_patch")"
+
+clean_patch='*** Begin Patch
+*** Add File: AGENTS.override.md
++small
+*** End Patch'
+padded_clean=$(printf ' \n\t%s\n \t' "$clean_patch")
+expect_decision "Codex trims a padded clean patch command" '' "$fixture" \
+  "$(payload_codex "$padded_clean")"
+
 patch='*** Begin Patch
 *** Update File: ../AGENTS.md
 @@
