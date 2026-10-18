@@ -1,6 +1,13 @@
 import AppKit
 import Darwin
 
+// Diagnostic probe for the focus guard. It never disables the native Cmd+Tab, so
+// it starts before the restore handlers below: their re-enable would undercut an
+// installed Switcher running beside it.
+if CommandLine.arguments.contains("--focus-probe") {
+    FocusProbe.run()
+}
+
 // Signal handlers to restore native Cmd+Tab on crash/quit
 // SIGTERM: quit/force-quit from Activity Monitor
 // SIGTRAP: crash in swift code
