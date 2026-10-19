@@ -12,6 +12,8 @@ struct AppInfo {
 class AppListProvider {
     // Track app activation order (most recent first)
     private static var mruOrder: [pid_t] = []
+    // Each app's latest move to the head, so the focus guard can undo a steal's.
+    private static var promotions: [pid_t: RecentApps.Promotion] = [:]
     private static var isObserving = false
 
     /// Start observing app activations to track MRU order
@@ -38,6 +40,7 @@ class AppListProvider {
         ) { notification in
             if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
                 mruOrder.removeAll { $0 == app.processIdentifier }
+                promotions[app.processIdentifier] = nil
             }
         }
     }
@@ -66,11 +69,16 @@ class AppListProvider {
 
     /// Update MRU order when an app is activated
     private static func updateMRU(_ pid: pid_t) {
-        mruOrder.removeAll { $0 == pid }
-        mruOrder.insert(pid, at: 0)
-        if mruOrder.count > 50 {
-            mruOrder.removeLast()
-        }
+        let moved = RecentApps.promote(pid, in: mruOrder, cap: 50)
+        mruOrder = moved.order
+        promotions[pid] = moved.promotion
+    }
+
+    /// Takes back an activation the focus guard reverted, so the stealer does not
+    /// rank second and catch the next quick Cmd+Tab.
+    static func undoActivation(of pid: pid_t) {
+        guard let promotion = promotions.removeValue(forKey: pid) else { return }
+        mruOrder = RecentApps.undo(promotion, in: mruOrder)
     }
 
     /// The switcher's app list, MRU-ordered — what actually gets shown.

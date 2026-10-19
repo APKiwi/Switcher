@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
     private var currentApps: [AppInfo] = []
     private var statusBarController: StatusBarController!
     private var prefsWindowController: PreferencesWindowController!
+    private let focusGuard = FocusGuard()
 
     // True once we've taken over Cmd+Tab (event tap live + native Cmd+Tab disabled).
     private var switchingEnabled = false
@@ -46,6 +47,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
         Preferences.registerDefaults()
 
         AppListProvider.startObserving()
+        focusGuard.onStealReverted = { AppListProvider.undoActivation(of: $0.processIdentifier) }
 
         // Setup hotkey manager (does NOT take over Cmd+Tab yet — see enableSwitching)
         hotkeyManager = HotkeyManager()
@@ -77,6 +79,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
                 self?.hotkeyManager.unregisterShowAllHotkey()
             }
         }
+        prefsWindowController.onToggleFocusGuard = { [weak self] _ in self?.refreshFocusGuard() }
 
         // Only take over Cmd+Tab once Accessibility permission is confirmed. Until
         // then, native Cmd+Tab is left working — so a first launch without
@@ -106,6 +109,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
     func applicationWillTerminate(_ notification: Notification) {
         setNativeCommandTabEnabled(true)
         hotkeyManager?.stop()
+        focusGuard.stop()
     }
 
     // MARK: - HotkeyManagerDelegate
@@ -293,12 +297,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
     // MARK: - Private Methods
 
     private func activateApp(_ appInfo: AppInfo) {
+        focusGuard.noteSwitcherAction()
         appInfo.app.activate(options: [.activateIgnoringOtherApps])
     }
 
     private func hideSelectedApp() {
         guard let appToHide = panel.removeSelectedApp() else { return }
 
+        focusGuard.noteSwitcherAction()  // hiding the frontmost app activates the next
         appToHide.app.hide()
         actedOnPIDs.insert(appToHide.pid)
         currentApps.removeAll { $0.pid == appToHide.pid }
@@ -335,6 +341,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
     private func minimizeSelectedApp() {
         guard let appToMinimize = panel.removeSelectedApp() else { return }
 
+        focusGuard.noteSwitcherAction()
         WindowActions.minimizeAllWindows(ofPID: appToMinimize.pid)
         actedOnPIDs.insert(appToMinimize.pid)
         currentApps.removeAll { $0.pid == appToMinimize.pid }
@@ -347,6 +354,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
     private func quitSelectedApp() {
         guard let appToQuit = panel.removeSelectedApp() else { return }
 
+        focusGuard.noteSwitcherAction()  // quitting the frontmost app activates the next
         appToQuit.app.terminate()
         actedOnPIDs.insert(appToQuit.pid)
         currentApps.removeAll { $0.pid == appToQuit.pid }
@@ -439,7 +447,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
         setNativeCommandTabEnabled(false)
         hotkeyManager.registerHotkeys()
         switchingEnabled = true
+        refreshFocusGuard()
         print("Switching enabled.")
+    }
+
+    /// The guard runs only with Accessibility confirmed: without it the key
+    /// monitor is blind, so a Spotlight launch's Return goes unseen and the
+    /// launch would be reverted.
+    private func refreshFocusGuard() {
+        if switchingEnabled && Preferences.focusGuardEnabled {
+            focusGuard.start()
+        } else {
+            focusGuard.stop()
+        }
     }
 
     /// Polls Accessibility permission on a background timer and reconciles state.
@@ -484,6 +504,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
         switchingEnabled = false
         setNativeCommandTabEnabled(true)
         hotkeyManager.stop()
+        focusGuard.stop()
         NSApp.terminate(nil)
     }
 

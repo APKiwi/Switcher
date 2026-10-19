@@ -16,6 +16,8 @@ in a non-activating panel.
 - `AppSwitcherPanel.swift` lays out the non-activating panel, click shields, selection, and mouse handling.
 - `AppItemView.swift` draws an icon, selection, and optional Dock badge.
 - `WindowActions.swift` performs deliberate Accessibility actions such as minimizing another app's windows.
+- `FocusGuard.swift` sends focus back when an app takes it unasked. `FocusProbe.swift` runs it with a trace
+  for `--focus-probe`.
 - `Preferences.swift`, `PreferencesWindowController.swift`, `StatusBarController.swift`, and `LoginItem.swift`
   own settings and supporting surfaces.
 - `PrivateAPIs.swift` declares the symbolic-hotkey and WindowServer query entry points.
@@ -93,6 +95,27 @@ expands only the current session.
 While the panel is open, a slow refresh appends newly visible applications without removing or reordering
 existing items. Applications acted on with hide, quit, or minimize still consume their slot for that session
 so the panel cannot refill behind the user's actions. An expanded session remains uncapped for refreshes.
+
+## Focus guard
+
+`FocusGuard` is off by default (`focusGuardEnabled`) and runs only once Accessibility is confirmed. Without it
+the key monitor is blind, so a launch's Return would go unseen and the launch would be reverted.
+
+Global and local `NSEvent` monitors feed input to `FocusIntent`, which judges each activation 150 ms after its
+notice by event timestamps. Only input that can switch apps counts: clicks, Return or Enter, Command, Control or
+Option chords and releases, Space changes, and Switcher's own panel actions. `AppDelegate` records those with
+`noteSwitcherAction()`, because the panel's Carbon hotkeys reach no monitor. A launch is judged from when it
+started and keeps its intent while the user waits for it.
+
+A steal stands for one second, then `NSRunningApplication.activate` brings back the latest app brought forward
+on purpose, with an AX fallback. A click, confirm key, shortcut, modifier release or panel action in that second
+cancels the revert. Once a revert lands, `AppListProvider.undoActivation(of:)` puts the stealer back where it
+ranked, so a quick Cmd+Tab still reaches the previous app.
+
+The guard fails open. Agents and menu-bar apps, Apple's prompt agents, System Settings and the user's
+`focusGuardAllowedApps` keep focus, and so does any app that takes focus from in front of a prompt: a revert
+would send the rest of a password to the app behind it. Evidence and open questions are in
+`FocusIntentSpecs.md`.
 
 ## Panel and preferences
 

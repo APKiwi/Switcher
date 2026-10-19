@@ -15,6 +15,8 @@ enum Preferences {
         static let hideMinimizedOnlyApps = "hideMinimizedOnlyApps"
         static let limitRecentApps = "limitRecentApps"
         static let recentAppsLimit = "recentAppsLimit"
+        static let focusGuardEnabled = "focusGuardEnabled"
+        static let focusGuardAllowedApps = "focusGuardAllowedApps"
     }
 
     private static let defaults = UserDefaults.standard
@@ -78,5 +80,20 @@ enum Preferences {
     static var recentAppsLimit: Int {
         get { defaults.integer(forKey: Key.recentAppsLimit) }
         set { defaults.set(newValue, forKey: Key.recentAppsLimit) }
+    }
+
+    /// Whether the focus guard sends focus back when an app takes it unasked.
+    /// Defaults to false: it reverts other apps' activations, which is not
+    /// something to turn on for someone.
+    static var focusGuardEnabled: Bool {
+        get { defaults.bool(forKey: Key.focusGuardEnabled) }
+        set { defaults.set(newValue, forKey: Key.focusGuardEnabled) }
+    }
+
+    /// Bundle identifiers the focus guard never reverts, set from the terminal:
+    /// `defaults write com.simpleswitcher.app focusGuardAllowedApps -array com.example.app`.
+    /// Read on every decision, so no restart.
+    static var focusGuardAllowedApps: Set<String> {
+        Set(defaults.stringArray(forKey: Key.focusGuardAllowedApps) ?? [])
     }
 }

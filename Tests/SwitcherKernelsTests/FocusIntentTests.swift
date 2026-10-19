@@ -15,12 +15,16 @@ enum FocusIntentTests {
         Check.run("testStealDuringTypingIsASteal", testStealDuringTypingIsASteal)
         Check.run("testLateDeliveredClickStillCounts", testLateDeliveredClickStillCounts)
         Check.run("testHoldToSwitchReleaseCounts", testHoldToSwitchReleaseCounts)
+        Check.run("testSpotlightLaunchAtTheWindowEdgeIsCoveredTwice", testSpotlightLaunchAtTheWindowEdgeIsCoveredTwice)
+        Check.run("testStagedLaunchWithNoInputIsASteal", testStagedLaunchWithNoInputIsASteal)
         // B. Direct input
         Check.run("testTypingAloneNeverJustifiesAnActivation", testTypingAloneNeverJustifiesAnActivation)
         Check.run("testInputAfterTheActivationIsNotItsCause", testInputAfterTheActivationIsNotItsCause)
         Check.run("testInputWindowBoundary", testInputWindowBoundary)
         Check.run("testMostRecentCauseIsReported", testMostRecentCauseIsReported)
         Check.run("testSpaceChangeBeforeTheActivationCounts", testSpaceChangeBeforeTheActivationCounts)
+        Check.run("testSpaceChangeNoticedJustAfterTheActivationCounts", testSpaceChangeNoticedJustAfterTheActivationCounts)
+        Check.run("testSwitcherActionCounts", testSwitcherActionCounts)
         // C. Launches
         Check.run("testScriptedLaunchWithNoInputIsASteal", testScriptedLaunchWithNoInputIsASteal)
         Check.run("testSlowLaunchLandsWhenTheUserWaits", testSlowLaunchLandsWhenTheUserWaits)
@@ -32,6 +36,12 @@ enum FocusIntentTests {
         Check.run("testModifierChordsAreShortcuts", testModifierChordsAreShortcuts)
         Check.run("testOnlyCommandControlOptionReleasesCount", testOnlyCommandControlOptionReleasesCount)
         Check.run("testWhichInputsCancelARevert", testWhichInputsCancelARevert)
+        // E. Exemptions
+        Check.run("testSystemPromptsAreExemptEvenIfRegular", testSystemPromptsAreExemptEvenIfRegular)
+        Check.run("testAgentsAreExempt", testAgentsAreExempt)
+        Check.run("testUserAllowedAppsAreExempt", testUserAllowedAppsAreExempt)
+        Check.run("testOrdinaryAppsAreNotExempt", testOrdinaryAppsAreNotExempt)
+        Check.run("testOnlyPromptsMayHoldTyping", testOnlyPromptsMayHoldTyping)
     }
 
     private static func classify(at activation: Double, launchedAt: Double? = nil,
@@ -80,6 +90,20 @@ enum FocusIntentTests {
         Check.equal(classify(at: 9.993, [Input(.typing, at: 9.266), release]), .intended(by: release))
     }
 
+    /// Second run: Return 488 ms before Calculator's activation, just inside the
+    /// direct window. Had it come 100 ms later, the launch rule still holds it.
+    static func testSpotlightLaunchAtTheWindowEdgeIsCoveredTwice() {
+        let returnKey = Input(.confirmKey, at: 11.018)
+        Check.equal(classify(at: 11.506, launchedAt: 11.149, [returnKey]), .intended(by: returnKey))
+        Check.equal(classify(at: 11.606, launchedAt: 11.149, [returnKey]), .launched(by: returnKey))
+    }
+
+    /// Second run's STEAL #1: `sleep 5; open -a Chess`, then hands off. Chess
+    /// launched 158 ms before it activated, the last input 3.6 s before that.
+    static func testStagedLaunchWithNoInputIsASteal() {
+        Check.equal(classify(at: 75.124, launchedAt: 74.966, [Input(.click, at: 71.568)]), .steal)
+    }
+
     // MARK: - B. Direct input
 
     static func testTypingAloneNeverJustifiesAnActivation() {
@@ -105,6 +129,21 @@ enum FocusIntentTests {
     static func testSpaceChangeBeforeTheActivationCounts() {
         let swipe = Input(.spaceChange, at: 9.9)
         Check.equal(classify(at: 10, [swipe]), .intended(by: swipe))
+    }
+
+    /// Fails open until the notice order is measured: a swipe that reads as a
+    /// steal would be swiped back.
+    static func testSpaceChangeNoticedJustAfterTheActivationCounts() {
+        let swipe = Input(.spaceChange, at: 10.1)
+        Check.equal(classify(at: 10, [swipe]), .intended(by: swipe))
+        Check.equal(classify(at: 10, [Input(.spaceChange, at: 10 + FocusIntent.decisionDelay + 0.01)]), .steal)
+    }
+
+    /// A click on the panel goes to Switcher's own window and an H or Q is a
+    /// Carbon hotkey, so the app records them itself.
+    static func testSwitcherActionCounts() {
+        let action = Input(.switcher, at: 9.98)
+        Check.equal(classify(at: 10, [action]), .intended(by: action))
     }
 
     // MARK: - C. Launches
@@ -171,9 +210,44 @@ enum FocusIntentTests {
         Check.expect(FocusIntent.InputKind.confirmKey.cancelsRevert)
         Check.expect(FocusIntent.InputKind.shortcut.cancelsRevert)
         Check.expect(FocusIntent.InputKind.modifierRelease.cancelsRevert)
+        Check.expect(FocusIntent.InputKind.switcher.cancelsRevert)
         Check.expect(!FocusIntent.InputKind.typing.cancelsRevert)
         Check.expect(!FocusIntent.InputKind.spaceChange.cancelsRevert)
         Check.expect(FocusIntent.InputKind.spaceChange.canSwitchApps)
         Check.expect(!FocusIntent.InputKind.typing.canSwitchApps)
+    }
+
+    // MARK: - E. Exemptions
+
+    static func testSystemPromptsAreExemptEvenIfRegular() {
+        for id in ["com.apple.SecurityAgent", "com.apple.systempreferences"] {
+            Check.equal(FocusIntent.exemption(bundleID: id, isRegularApp: true, allowed: []), .systemPrompt)
+        }
+    }
+
+    /// Little Snitch's alerts come from an `LSUIElement` agent.
+    static func testAgentsAreExempt() {
+        let agent = "at.obdev.littlesnitch.agent"
+        Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: []), .notARegularApp)
+        Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: [agent]), .notARegularApp)
+        Check.equal(FocusIntent.exemption(bundleID: nil, isRegularApp: false, allowed: []), .notARegularApp)
+    }
+
+    static func testUserAllowedAppsAreExempt() {
+        let code = "com.microsoft.VSCode"
+        Check.equal(FocusIntent.exemption(bundleID: code, isRegularApp: true, allowed: [code]), .allowedByUser)
+    }
+
+    static func testOrdinaryAppsAreNotExempt() {
+        Check.equal(FocusIntent.exemption(bundleID: "com.apple.Chess", isRegularApp: true, allowed: ["com.apple.TextEdit"]), nil)
+        Check.equal(FocusIntent.exemption(bundleID: nil, isRegularApp: true, allowed: []), nil)
+    }
+
+    /// An allowed app in front is still guarded. A prompt in front is not, since
+    /// a revert would send the rest of a password to the app behind it.
+    static func testOnlyPromptsMayHoldTyping() {
+        Check.expect(FocusIntent.Exemption.systemPrompt.mayHoldTyping)
+        Check.expect(FocusIntent.Exemption.notARegularApp.mayHoldTyping)
+        Check.expect(!FocusIntent.Exemption.allowedByUser.mayHoldTyping)
     }
 }

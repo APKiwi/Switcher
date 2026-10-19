@@ -30,6 +30,8 @@ public enum FocusIntent {
         case modifierRelease
         /// The active Space changed, as a trackpad swipe does.
         case spaceChange
+        /// Switcher's own panel and hotkeys, which no global monitor sees.
+        case switcher
         /// Characters, Shift, arrows and the rest. Evidence the user is busy,
         /// never a reason for another app to come forward.
         case typing
@@ -40,6 +42,13 @@ public enum FocusIntent {
         /// with it and the revert should stand down. Typing is what the steal is
         /// taking, and a steal from another Space changes the Space itself.
         public var cancelsRevert: Bool { self != .typing && self != .spaceChange }
+
+        /// How long after an activation this input may be stamped and still be
+        /// its cause. Events carry their own timestamps, but a Space change is
+        /// stamped when its notice arrives, and whether that notice lands before
+        /// or after the activation a swipe causes is not measured yet. Reverting a
+        /// swipe would swipe the user back, so it gets the whole decision delay.
+        public var stampLag: TimeInterval { self == .spaceChange ? FocusIntent.decisionDelay : 0 }
     }
 
     public struct Input: Equatable {
@@ -74,10 +83,10 @@ public enum FocusIntent {
         static let switching: Modifiers = [.command, .control, .option]
     }
 
-    /// Longest measured gap from a click or key to the activation it caused was
-    /// 255 ms, plus one ambiguous 407 ms.
+    /// Longest measured gap from a click or key to an already running app's
+    /// activation was 407 ms. Launches took up to 563 ms, which the launch rule covers.
     public static let inputWindow: TimeInterval = 0.5
-    /// Return to the launch starting measured 123 and 143 ms.
+    /// Return to the launch starting measured 123 to 143 ms.
     public static let launchWindow: TimeInterval = 0.5
     /// Input this soon after the launching input is still part of it, such as a
     /// second Return or a key typed as the launcher closes.
@@ -94,7 +103,10 @@ public enum FocusIntent {
     public static func classify(activationAt: TimeInterval, launchedAt: TimeInterval?,
                                 inputs: [Input]) -> Verdict {
         let direct = inputs
-            .filter { $0.kind.canSwitchApps && $0.at <= activationAt && activationAt - $0.at <= inputWindow }
+            .filter {
+                $0.kind.canSwitchApps && $0.at <= activationAt + $0.kind.stampLag
+                    && activationAt - $0.at <= inputWindow
+            }
             .max { $0.at < $1.at }
         if let direct { return .intended(by: direct) }
 
@@ -119,5 +131,42 @@ public enum FocusIntent {
     public static func flagsKind(from previous: Modifiers, to current: Modifiers) -> InputKind {
         let released = previous.intersection(.switching).subtracting(current)
         return released.isEmpty ? .typing : .modifierRelease
+    }
+
+    // MARK: - Exemptions
+
+    /// Why a steal is let through instead of reverted.
+    public enum Exemption: Equatable {
+        /// An agent or menu-bar app, with no Dock icon. macOS's password, Touch ID
+        /// and Gatekeeper prompts all come from these (`NSUIElement`), as do
+        /// firewall alerts such as Little Snitch's.
+        case notARegularApp
+        /// One of `systemPrompts`, listed so it holds even if one turns regular.
+        case systemPrompt
+        /// In the user's `focusGuardAllowedApps`.
+        case allowedByUser
+
+        /// A prompt may be waiting for a password, so a steal from in front of
+        /// one is not reverted either: the revert would send the rest of the
+        /// password to the app behind it.
+        public var mayHoldTyping: Bool { self != .allowedByUser }
+    }
+
+    /// Apple's authorization, Touch ID, alert and Gatekeeper agents, plus System
+    /// Settings, which permission prompts open with no input behind it.
+    public static let systemPrompts: Set<String> = [
+        "com.apple.SecurityAgent",
+        "com.apple.LocalAuthentication.UIAgent",
+        "com.apple.UserNotificationCenter",
+        "com.apple.coreservices.uiagent",
+        "com.apple.systempreferences",
+    ]
+
+    public static func exemption(bundleID: String?, isRegularApp: Bool,
+                                 allowed: Set<String>) -> Exemption? {
+        if let bundleID, systemPrompts.contains(bundleID) { return .systemPrompt }
+        if !isRegularApp { return .notARegularApp }
+        if let bundleID, allowed.contains(bundleID) { return .allowedByUser }
+        return nil
     }
 }

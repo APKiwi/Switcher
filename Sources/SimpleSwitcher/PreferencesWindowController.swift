@@ -12,6 +12,10 @@ class PreferencesWindowController: NSWindowController {
     /// register/unregister the ⌥⌘Tab show-all hotkey live. Carries the new value.
     var onToggleLimitRecent: ((Bool) -> Void)?
 
+    /// Invoked when the focus guard checkbox changes, so the caller can start or
+    /// stop the guard live. Carries the new value.
+    var onToggleFocusGuard: ((Bool) -> Void)?
+
     private var launchAtLoginCheckbox: NSButton!
     private var menuBarCheckbox: NSButton!
     private var grayscaleCheckbox: NSButton!
@@ -20,12 +24,13 @@ class PreferencesWindowController: NSWindowController {
     private var limitRecentCheckbox: NSButton!
     private var recentLimitPopup: NSPopUpButton!
     private var limitHintLabel: NSTextField!
+    private var focusGuardCheckbox: NSButton!
 
     convenience init() {
         let window = NSWindow(
             // Height must cover every stack row; a new checkbox needs ~32pt more
-            // (the recent-apps hint sub-row accounts for 18 of the current total).
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 320),
+            // (the recent-apps and focus guard hint sub-rows account for 36 of the current total).
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 370),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -102,6 +107,15 @@ class PreferencesWindowController: NSWindowController {
         limitHintLabel.font = .systemFont(ofSize: 11)
         limitHintLabel.textColor = .secondaryLabelColor
 
+        focusGuardCheckbox = NSButton(
+            checkboxWithTitle: "Stop apps stealing focus",
+            target: self,
+            action: #selector(toggleFocusGuard)
+        )
+        let focusGuardHint = NSTextField(labelWithString: "Apps you open and security prompts still come forward")
+        focusGuardHint.font = .systemFont(ofSize: 11)
+        focusGuardHint.textColor = .secondaryLabelColor
+
         let quitButton = NSButton(title: "Quit Switcher", target: self, action: #selector(quit))
         quitButton.bezelStyle = .rounded
 
@@ -117,6 +131,8 @@ class PreferencesWindowController: NSWindowController {
             hideMinimizedCheckbox,
             limitRow,
             limitHintLabel,
+            focusGuardCheckbox,
+            focusGuardHint,
             quitButton,
             versionLabel
         ])
@@ -125,6 +141,7 @@ class PreferencesWindowController: NSWindowController {
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.setCustomSpacing(3, after: limitRow)  // the hint reads as part of its row
+        stack.setCustomSpacing(3, after: focusGuardCheckbox)
         contentView.addSubview(stack)
 
         NSLayoutConstraint.activate([
@@ -160,6 +177,7 @@ class PreferencesWindowController: NSWindowController {
         }
         recentLimitPopup.isEnabled = Preferences.limitRecentApps
         limitHintLabel.isHidden = !Preferences.limitRecentApps
+        focusGuardCheckbox.state = Preferences.focusGuardEnabled ? .on : .off
     }
 
     private func versionString() -> String {
@@ -210,6 +228,11 @@ class PreferencesWindowController: NSWindowController {
     @objc private func changeRecentLimit() {
         guard let title = recentLimitPopup.titleOfSelectedItem, let count = Int(title) else { return }
         Preferences.recentAppsLimit = count
+    }
+
+    @objc private func toggleFocusGuard() {
+        Preferences.focusGuardEnabled = focusGuardCheckbox.state == .on
+        onToggleFocusGuard?(Preferences.focusGuardEnabled)
     }
 
     @objc private func quit() {

@@ -32,10 +32,29 @@ Three causes, one rule change each:
 3. Typing is not a reason for another app to come forward. Only clicks, Return or Enter, Command, Control or
    Option chords and releases, and Space changes count.
 
+## Second run, with these rules
+
+The same day, 18 activations: 17 intended and one steal. Three were launches inside the direct window
+(Calculator from Spotlight 488 ms after Return, TextEdit 392 ms, Terminal 325 ms after a click). The steal was a
+staged `sleep 5; open -a Chess` with no input for 3.6 s. Chess activated 158 ms after it launched, and
+`NSRunningApplication.activate` brought TextEdit back 28 ms after the call. Another Chess launch never took focus
+itself and came forward 5.5 s after it started, on a click.
+
+## Exemptions
+
+Read from `Info.plist` on 27.0.1. SecurityAgent (`com.apple.SecurityAgent`), the LocalAuthentication agent behind
+Touch ID and password sheets (`com.apple.LocalAuthentication.UIAgent`) and `com.apple.UserNotificationCenter` set
+`NSUIElement`. CoreServicesUIAgent (`com.apple.coreservices.uiagent`, Gatekeeper) and Little Snitch Agent
+(`at.obdev.littlesnitch.agent`) set `LSUIElement`. All run as agents, so the not-a-regular-app rule covers them.
+The Apple agents are also listed by bundle id, with System Settings, which is a regular app.
+
 ## Not yet measured
 
 - Whether a trackpad Space swipe's `activeSpaceDidChange` notice arrives before or after the activation it causes.
-  If it arrives after, a swipe reads as a steal.
+  Until it is measured, a Space change noticed up to `decisionDelay` after an activation counts as its cause. A
+  swipe is never swiped back, and a steal from another Space is let through.
 - Launches slower than a few seconds, with and without the user moving on.
+- Live admin prompts (`sfltool` background item prompts, Little Snitch connection and changed-binary alerts). The
+  exemption rests on the `Info.plist` evidence above, not on a prompt seen by the probe.
 
 Re-run the probe after a major macOS update.

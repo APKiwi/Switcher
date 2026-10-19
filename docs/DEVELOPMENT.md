@@ -37,6 +37,19 @@ Switcher.app/Contents/MacOS/SimpleSwitcher --list-apps
 Do not open the application during routine agent verification. Hand a live Accessibility or visual check to
 the user unless the task explicitly requests a launch.
 
+## Focus probe
+
+`--focus-probe` runs the focus guard for two minutes from a bundle and prints every decision. It registers no
+hotkeys and leaves native Cmd+Tab alone, so it runs beside an installed Switcher. Turn the installed guard off
+first, or both revert. It needs the bundle's Accessibility grant, so build it with the stable signing identity.
+Re-run it after a major macOS update and record the results in `FocusIntentSpecs.md`. It is a live check, so it
+is a human handoff:
+
+```bash
+./build-app.sh debug
+LOG=/tmp/switcher-focus-probe.log; : > "$LOG"; open -g -n --stdout "$LOG" --stderr "$LOG" Switcher.app --args --focus-probe && tail -f "$LOG"
+```
+
 ## Bundle and signing
 
 `build-app.sh` builds `Switcher.app`, copies `Info.plist` and the committed icon, and signs the bundle. It
@@ -59,7 +72,8 @@ The bundle is a build artifact. Do not copy it to `/Applications` or open it wit
 ## Permissions and troubleshooting
 
 Switcher needs Accessibility only. It does not need Input Monitoring or Screen Recording. The minimized-state
-query also adds no permission.
+query also adds no permission, and neither does the focus guard's key monitor on macOS 27
+(`FocusIntentSpecs.md`).
 
 Without Accessibility permission, the app leaves native Cmd+Tab working and polls for a grant. macOS caches a
 revoked grant for the running process, so removing the permission is not a reliable stop action. Quit from the
@@ -104,6 +118,14 @@ Every upstream integration must preserve these fork contracts:
 - Keep fork hotkey ids above upstream's highest id.
 - Register active-session actions with `activeModifier.carbonKey`, not a hardcoded Command modifier.
 - Preserve Option+Tab, Option+Shift+Tab, and Option+backtick behavior.
+- Keep the focus guard's hooks in shared files. In `AppDelegate`: the `focusGuard` property, `onStealReverted`
+  wiring, `refreshFocusGuard()` from `enableSwitching()` and the Preferences callback, `stop()` on revocation and
+  termination, and `noteSwitcherAction()` before every panel action that can change the frontmost app
+  (`activateApp`, hide, minimize, quit). A new upstream panel action of that kind needs the call too. In
+  `AppListProvider`: `updateMRU` through `RecentApps.promote`, the `promotions` map and `undoActivation(of:)`. The
+  two `focusGuard` keys in `Preferences`, the checkbox in `PreferencesWindowController`, and the `--focus-probe`
+  branch at the top of `main.swift`. The rest lives in fork-only files: `FocusGuard.swift`, `FocusProbe.swift` and
+  the `FocusIntent` kernel.
 - Run the executable kernel checks and a release build after integration.
 
 Do not recreate upstream's release or Homebrew workflow in this fork.

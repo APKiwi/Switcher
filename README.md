@@ -103,6 +103,7 @@ launching Switcher again while it's already running. The window lets you:
 - **Show declutter tip in switcher** — the ⌥⌘H "Hide others" hint that appears at 2+ rows
 - **Hide apps with only minimized windows** — keep fully-minimized apps out of the list
 - **Show only the [N] most recently used apps** — cap the switcher to your N most recent apps (2–12). When it's on, **Cmd+Opt+Tab** shows the full list for that one press of the switcher — handy when the app you want is older than the cap
+- **Stop apps stealing focus**: send focus back when an app comes forward without you asking, such as one that brings itself forward while it boots. Off by default, see [Focus guard](#focus-guard)
 
 The menu bar icon (⌘) also has a quick **Grayscale Icons** toggle, plus Preferences, Hide Other Apps, and Quit.
 
@@ -112,13 +113,27 @@ defaults write com.simpleswitcher.app grayscaleIcons -bool true   # enable
 defaults delete com.simpleswitcher.app grayscaleIcons             # revert
 ```
 
+## Focus guard
+
+With **Stop apps stealing focus** on, Switcher watches for the input that can switch apps: clicks, Return, shortcuts, modifier releases and Space changes. It classifies key presses and never records them. When an app comes forward and none of that asked for it, Switcher sends you back to where you were after a second. Click the app within that second to keep it.
+
+An app you launched may take as long as it needs while you wait. If you go back to work elsewhere first, its late arrival counts as a steal.
+
+Password and Touch ID prompts, Gatekeeper, menu-bar apps and agents (Little Snitch's alerts among them) and System Settings always keep focus. To let another app through, add its bundle identifier:
+
+```bash
+osascript -e 'id of app "Visual Studio Code"'                                        # find the identifier
+defaults write com.simpleswitcher.app focusGuardAllowedApps -array com.microsoft.VSCode # allow it
+defaults delete com.simpleswitcher.app focusGuardAllowedApps                            # clear the list
+```
+
 ## Permissions
 
 **Only Accessibility** — no Input Monitoring, no Screen Recording, no admin access.
 
 ## Technical Details
 
-~3,000 lines of Swift across 13 files, plus ~400 lines of pure, tested kernel logic. No dependencies. Uses:
+~3,500 lines of Swift across 15 files, plus ~600 lines of pure, tested kernel logic. No dependencies. Uses:
 - Carbon hotkeys (avoids Input Monitoring requirement)
 - CGEvent tap for modifier detection
 - Private `CGSSetSymbolicHotKeyEnabled` API to intercept native Cmd+Tab
