@@ -113,6 +113,9 @@ Every upstream integration must preserve these fork contracts:
 
 - Remove donation nags, menu items, preference controls, and the `launchCount`, `hasDonated`, `donateURL`,
   and `openDonatePage()` implementation.
+- Keep the `kiwi.ap.switcher` bundle identifier in `Info.plist` and the `defaults` examples. Upstream's
+  `com.simpleswitcher.app` would orphan the Accessibility grant, the login item and saved settings. Internal
+  queue labels keep upstream's `com.simpleswitcher.*` names to keep merges small.
 - Port `HotkeyManager.swift` instead of resolving it mechanically. Upstream changes overlap the Option-trigger
   paths and hotkey ids have collided before.
 - Keep fork hotkey ids above upstream's highest id.

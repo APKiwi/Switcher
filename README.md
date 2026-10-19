@@ -109,8 +109,8 @@ The menu bar icon (⌘) also has a quick **Grayscale Icons** toggle, plus Prefer
 
 Grayscale can still be set from the terminal if you prefer:
 ```bash
-defaults write com.simpleswitcher.app grayscaleIcons -bool true   # enable
-defaults delete com.simpleswitcher.app grayscaleIcons             # revert
+defaults write kiwi.ap.switcher grayscaleIcons -bool true   # enable
+defaults delete kiwi.ap.switcher grayscaleIcons             # revert
 ```
 
 ## Focus guard
@@ -123,8 +123,8 @@ Password and Touch ID prompts, Gatekeeper, menu-bar apps and agents (Little Snit
 
 ```bash
 osascript -e 'id of app "Visual Studio Code"'                                        # find the identifier
-defaults write com.simpleswitcher.app focusGuardAllowedApps -array com.microsoft.VSCode # allow it
-defaults delete com.simpleswitcher.app focusGuardAllowedApps                            # clear the list
+defaults write kiwi.ap.switcher focusGuardAllowedApps -array com.microsoft.VSCode # allow it
+defaults delete kiwi.ap.switcher focusGuardAllowedApps                            # clear the list
 ```
 
 ## Permissions

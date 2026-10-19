@@ -92,6 +92,8 @@ Building the bundle is allowed when relevant. Installing or opening it is a sepa
 
 - `build-app.sh` prefers the stable `AP Kiwi Local Signing` identity and falls back to ad hoc signing. Do not
   create or alter signing identities during an ordinary code task.
+- The bundle identifier is `kiwi.ap.switcher`. Changing it orphans the Accessibility grant, the login item and
+  saved settings.
 - The fork publishes no GitHub releases and no Homebrew tap. It is built from source and installed locally.
 - `Info.plist` is the single version source. Keep `CFBundleVersion` and `CFBundleShortVersionString` equal.
 - Bump once for a batch only when release work requires it. Create and push an annotated tag only when the

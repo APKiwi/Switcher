@@ -8,7 +8,7 @@ enum Preferences {
 
     private enum Key {
         // NOTE: must stay "grayscaleIcons" for backward compatibility with the
-        // existing `defaults write com.simpleswitcher.app grayscaleIcons` workflow.
+        // existing `defaults write kiwi.ap.switcher grayscaleIcons` workflow.
         static let grayscaleIcons = "grayscaleIcons"
         static let showMenuBarIcon = "showMenuBarIcon"
         static let showDeclutterTip = "showDeclutterTip"
@@ -91,7 +91,7 @@ enum Preferences {
     }
 
     /// Bundle identifiers the focus guard never reverts, set from the terminal:
-    /// `defaults write com.simpleswitcher.app focusGuardAllowedApps -array com.example.app`.
+    /// `defaults write kiwi.ap.switcher focusGuardAllowedApps -array com.example.app`.
     /// Read on every decision, so no restart.
     static var focusGuardAllowedApps: Set<String> {
         Set(defaults.stringArray(forKey: Key.focusGuardAllowedApps) ?? [])
