@@ -68,6 +68,8 @@ codesign --verify --deep --strict Switcher.app
 ```
 
 The bundle is a build artifact. Do not copy it to `/Applications` or open it without explicit authorization.
+When installing is authorized, move it rather than copy it. A copy left in the checkout shows up in Spotlight
+as a second Switcher, and opening it starts a second instance.
 
 ## Permissions and troubleshooting
 
