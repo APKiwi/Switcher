@@ -33,6 +33,7 @@ enum FocusIntentTests {
         Check.run("testLaunchIntentExpires", testLaunchIntentExpires)
         Check.run("testSwitchingElsewhereEndsALaunchAtOnce", testSwitchingElsewhereEndsALaunchAtOnce)
         Check.run("testTheLaunchersOwnHandBackKeepsTheLaunch", testTheLaunchersOwnHandBackKeepsTheLaunch)
+        Check.run("testAnotherDockClickWhileWaitingKeepsTheLaunch", testAnotherDockClickWhileWaitingKeepsTheLaunch)
         // D. Input mapping
         Check.run("testReturnAndEnterAreConfirmKeys", testReturnAndEnterAreConfirmKeys)
         Check.run("testModifierChordsAreShortcuts", testModifierChordsAreShortcuts)
@@ -192,6 +193,12 @@ enum FocusIntentTests {
     static func testTheLaunchersOwnHandBackKeepsTheLaunch() {
         let returnKey = Input(.confirmKey, at: 0)
         Check.equal(classify(at: 0.7, launchedAt: 0.12, [returnKey], switchedBy: returnKey), .launched(by: returnKey))
+    }
+
+    static func testAnotherDockClickWhileWaitingKeepsTheLaunch() {
+        let dockClick = Input(.click, at: 0)
+        let inputs = [dockClick, Input(.click, at: 1)]
+        Check.equal(classify(at: 5, launchedAt: 0.12, inputs), .launched(by: dockClick))
     }
 
     // MARK: - D. Input mapping

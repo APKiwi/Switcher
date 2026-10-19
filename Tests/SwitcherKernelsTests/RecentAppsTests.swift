@@ -19,6 +19,7 @@ enum RecentAppsTests {
         Check.run("testUndoOfALaunchDropsItsRank", testUndoOfALaunchDropsItsRank)
         Check.run("testUndoBeforeTheRevertIsRecordedGivesTheSameOrder", testUndoBeforeTheRevertIsRecordedGivesTheSameOrder)
         Check.run("testUndoClampsToTheEnd", testUndoClampsToTheEnd)
+        Check.run("testTwoStealsUndoLatestFirst", testTwoStealsUndoLatestFirst)
     }
 
     /// An app owns several windows, so its pid repeats; the frontmost of them is
@@ -91,6 +92,17 @@ enum RecentAppsTests {
         let steal = RecentApps.promote(9, in: [1, 2, 3, 9, 4], cap: 50)
         let undone = RecentApps.undo(steal.promotion, in: steal.order)
         Check.equal(RecentApps.promote(1, in: undone, cap: 50).order, [1, 2, 3, 9, 4])
+    }
+
+    /// A second steal before the revert: each rank was taken with the earlier
+    /// stealer still in the list, so the latest promotion is undone first.
+    private static func testTwoStealsUndoLatestFirst() {
+        let before: [pid_t] = [1, 2, 8, 3]
+        let first = RecentApps.promote(9, in: before, cap: 50)
+        let second = RecentApps.promote(8, in: first.order, cap: 50)
+        let revert = RecentApps.promote(1, in: second.order, cap: 50)
+        let undone = [second.promotion, first.promotion].reduce(revert.order) { RecentApps.undo($1, in: $0) }
+        Check.equal(undone, before)
     }
 
     private static func testUndoClampsToTheEnd() {

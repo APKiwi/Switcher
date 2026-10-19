@@ -43,6 +43,12 @@ public enum FocusIntent {
         /// taking, and a steal from another Space changes the Space itself.
         public var cancelsRevert: Bool { self != .typing && self != .spaceChange }
 
+        /// Whether this input, past a launch's slack, means the user went back to
+        /// work. A click does not: a second click on a slow app's bouncing Dock
+        /// icon is still waiting, and a click that picks another app ends the
+        /// wait through `lastSwitchCause` anyway.
+        public var endsAWait: Bool { self != .click }
+
         /// How long after an activation this input may be stamped and still be
         /// its cause. Events carry their own timestamps, but a Space change is
         /// stamped when its notice arrives, and whether that notice lands before
@@ -120,7 +126,9 @@ public enum FocusIntent {
             .max { $0.at < $1.at }
         guard let launchCause else { return .steal }
 
-        let movedOn = inputs.contains { $0.at > launchCause.at + launchSlack && $0.at < activationAt }
+        let movedOn = inputs.contains {
+            $0.kind.endsAWait && $0.at > launchCause.at + launchSlack && $0.at < activationAt
+        }
         let switchedAway = lastSwitchCause.map { $0.at > launchCause.at } ?? false
         return movedOn || switchedAway ? .steal : .launched(by: launchCause)
     }
