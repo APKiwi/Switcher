@@ -105,11 +105,12 @@ Global and local `NSEvent` monitors feed input to `FocusIntent`, which judges ea
 notice by event timestamps. Only input that can switch apps counts: clicks, Return or Enter, Command, Control or
 Option chords and releases, Space changes, and Switcher's own panel actions. `AppDelegate` records those with
 `noteSwitcherAction()`, because the panel's Carbon hotkeys reach no monitor. A launch is judged from when it
-started and keeps its intent while the user waits for it.
+started and keeps its intent while the user waits for it. A deliberate switch to another app ends that claim at
+once, unless the switch had the launch's own cause, as when a launcher hands focus back on its Return.
 
 A steal stands for one second, then `NSRunningApplication.activate` brings back the latest app brought forward
 on purpose, with an AX fallback. A click, confirm key, shortcut, modifier release or panel action in that second
-cancels the revert. Once a revert lands, `AppListProvider.undoActivation(of:)` puts the stealer back where it
+cancels the revert at once, and a later steal goes back to the app the user kept. Once a revert lands, `AppListProvider.undoActivation(of:)` puts the stealer back where it
 ranked, so a quick Cmd+Tab still reaches the previous app.
 
 The guard fails open. Agents and menu-bar apps, Apple's prompt agents, System Settings and the user's

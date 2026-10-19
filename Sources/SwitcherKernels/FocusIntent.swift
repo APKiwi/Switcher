@@ -100,8 +100,12 @@ public enum FocusIntent {
     ///   - activationAt: when the activation notice arrived.
     ///   - launchedAt: when the activating app launched, if that is known.
     ///   - inputs: recent input in any order, covering at least `launchLifetime`.
+    ///   - lastSwitchCause: the input behind the latest deliberate activation of
+    ///     another app. One newer than a launch's own cause means the user went
+    ///     elsewhere, however soon. The launch's own cause does not: a launcher
+    ///     such as Raycast hands focus back to the previous app on that Return.
     public static func classify(activationAt: TimeInterval, launchedAt: TimeInterval?,
-                                inputs: [Input]) -> Verdict {
+                                inputs: [Input], lastSwitchCause: Input? = nil) -> Verdict {
         let direct = inputs
             .filter {
                 $0.kind.canSwitchApps && $0.at <= activationAt + $0.kind.stampLag
@@ -117,7 +121,8 @@ public enum FocusIntent {
         guard let launchCause else { return .steal }
 
         let movedOn = inputs.contains { $0.at > launchCause.at + launchSlack && $0.at < activationAt }
-        return movedOn ? .steal : .launched(by: launchCause)
+        let switchedAway = lastSwitchCause.map { $0.at > launchCause.at } ?? false
+        return movedOn || switchedAway ? .steal : .launched(by: launchCause)
     }
 
     /// Return (36) and keypad Enter (76) confirm. A Command, Control or Option

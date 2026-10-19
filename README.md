@@ -117,7 +117,7 @@ defaults delete com.simpleswitcher.app grayscaleIcons             # revert
 
 With **Stop apps stealing focus** on, Switcher watches for the input that can switch apps: clicks, Return, shortcuts, modifier releases and Space changes. It classifies key presses and never records them. When an app comes forward and none of that asked for it, Switcher sends you back to where you were after a second. Click the app within that second to keep it.
 
-An app you launched may take as long as it needs while you wait. If you go back to work elsewhere first, its late arrival counts as a steal.
+An app you launched may take up to a minute to come forward while you wait. If you go back to work elsewhere first, its late arrival counts as a steal.
 
 Password and Touch ID prompts, Gatekeeper, menu-bar apps and agents (Little Snitch's alerts among them) and System Settings always keep focus. To let another app through, add its bundle identifier:
 

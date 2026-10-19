@@ -31,6 +31,8 @@ enum FocusIntentTests {
         Check.run("testSlowLaunchIsAStealOnceTheUserMovedOn", testSlowLaunchIsAStealOnceTheUserMovedOn)
         Check.run("testInputWithinTheSlackKeepsTheLaunch", testInputWithinTheSlackKeepsTheLaunch)
         Check.run("testLaunchIntentExpires", testLaunchIntentExpires)
+        Check.run("testSwitchingElsewhereEndsALaunchAtOnce", testSwitchingElsewhereEndsALaunchAtOnce)
+        Check.run("testTheLaunchersOwnHandBackKeepsTheLaunch", testTheLaunchersOwnHandBackKeepsTheLaunch)
         // D. Input mapping
         Check.run("testReturnAndEnterAreConfirmKeys", testReturnAndEnterAreConfirmKeys)
         Check.run("testModifierChordsAreShortcuts", testModifierChordsAreShortcuts)
@@ -45,8 +47,9 @@ enum FocusIntentTests {
     }
 
     private static func classify(at activation: Double, launchedAt: Double? = nil,
-                                 _ inputs: [Input]) -> FocusIntent.Verdict {
-        FocusIntent.classify(activationAt: activation, launchedAt: launchedAt, inputs: inputs)
+                                 _ inputs: [Input], switchedBy: Input? = nil) -> FocusIntent.Verdict {
+        FocusIntent.classify(activationAt: activation, launchedAt: launchedAt, inputs: inputs,
+                             lastSwitchCause: switchedBy)
     }
 
     // MARK: - A. Measured cases
@@ -176,6 +179,19 @@ enum FocusIntentTests {
     static func testLaunchIntentExpires() {
         let lifetime = FocusIntent.launchLifetime
         Check.equal(classify(at: 0.1 + lifetime + 1, launchedAt: 0.1, [Input(.confirmKey, at: 0)]), .steal)
+    }
+
+    /// Inside the slack, but the user picked another app: the launch is over.
+    static func testSwitchingElsewhereEndsALaunchAtOnce() {
+        let inputs = [Input(.confirmKey, at: 0), Input(.switcher, at: 0.3)]
+        Check.equal(classify(at: 2, launchedAt: 0.12, inputs, switchedBy: Input(.switcher, at: 0.3)), .steal)
+    }
+
+    /// A launcher that closes on Return gives focus back to the previous app on
+    /// the same keypress. That switch has the launch's own cause.
+    static func testTheLaunchersOwnHandBackKeepsTheLaunch() {
+        let returnKey = Input(.confirmKey, at: 0)
+        Check.equal(classify(at: 0.7, launchedAt: 0.12, [returnKey], switchedBy: returnKey), .launched(by: returnKey))
     }
 
     // MARK: - D. Input mapping
