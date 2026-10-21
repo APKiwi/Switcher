@@ -37,17 +37,19 @@ final class FocusGuard {
         var reverts: [RevertMethod: (ok: Int, failed: Int)] = [:]
     }
 
-    /// Called once a revert lands, with each app it sent back, latest first.
-    var onStealReverted: ((NSRunningApplication) -> Void)?
+    /// Each activation that keeps focus, in the order they happened, once it is
+    /// judged. A steal sent back never comes through, so it never ranks.
+    var onKeep: ((NSRunningApplication) -> Void)?
+    /// Called as the guard starts and stops, so the MRU order knows where its
+    /// activations come from.
+    var onRunningChange: ((Bool) -> Void)?
     /// Every decision as a line of text, for `--focus-probe`.
     var trace: ((String) -> Void)?
     private(set) var tally = Tally()
     private(set) var isRunning = false
 
     private struct InFlightRevert {
-        /// The app holding focus is the last.
-        let stealers: [NSRunningApplication]
-        var stealer: NSRunningApplication { stealers[stealers.count - 1] }
+        let stealer: NSRunningApplication
         let target: NSRunningApplication
         let method: RevertMethod
         let startedAt: TimeInterval
@@ -64,13 +66,10 @@ final class FocusGuard {
     private var lastSwitchCause: FocusIntent.Input?
     /// Whether the latest activation was a prompt that may be taking a password.
     private var promptInFront = false
-    /// Steals not sent back yet, oldest first. One that lost focus to a newer
-    /// steal before its own decision goes back with that one's revert.
-    private var unreverted: [NSRunningApplication] = []
-    /// Steals sent back whose MRU ranks wait for `restoreRanks`, oldest first.
-    private var landed: [NSRunningApplication] = []
-    /// Activations noticed and not yet judged.
-    private var undecided = 0
+    /// Activations waiting to be judged before they reach `onKeep`.
+    private var activations = ActivationQueue<NSRunningApplication>()
+    /// Counts starts, so a decision queued before a stop is dropped after a restart.
+    private var session = 0
     private var inFlight: InFlightRevert?
     private var monitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
@@ -94,6 +93,8 @@ final class FocusGuard {
         }
 
         isRunning = true
+        session += 1
+        activations = ActivationQueue()
         lastIntentional = NSWorkspace.shared.frontmostApplication
         lastSwitchCause = nil
         promptInFront = false
@@ -112,6 +113,7 @@ final class FocusGuard {
             },
         ]
         trace?("guarding, starting app \(describe(lastIntentional))")
+        onRunningChange?(true)
     }
 
     func stop() {
@@ -121,13 +123,13 @@ final class FocusGuard {
         monitors.removeAll()
         observers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         observers.removeAll()
-        unreverted.removeAll()
-        landed.removeAll()
-        undecided = 0
+        // Failing open: whatever is still being judged keeps its rank.
+        keep(activations.flush())
         inFlight = nil
         inputs.removeAll()
         lastIntentional = nil
         lastSwitchCause = nil
+        onRunningChange?(false)
     }
 
     /// Records a panel action that may change the frontmost app. The Carbon
@@ -181,7 +183,6 @@ final class FocusGuard {
     /// Input after a steal that may switch apps means the user is acting on it:
     /// whatever is in front now is where focus belongs.
     private func acceptSteal(cancelledBy cause: FocusIntent.Input, after event: String, at time: TimeInterval) {
-        unreverted.removeAll()
         let front = NSWorkspace.shared.frontmostApplication
         if let front, front.processIdentifier != ownPID { lastIntentional = front }
         lastSwitchCause = cause
@@ -209,25 +210,42 @@ final class FocusGuard {
                 .max(by: { $0.at < $1.at }) {
                 lastSwitchCause = cause
             }
+            keep(activations.notice(app, kept: true).released)
             return
         }
 
         let launchedAt = app.launchDate.map { activationAt - Date().timeIntervalSince($0) }
-        undecided += 1
+        // A cause already seen stays one however much input arrives late, so a
+        // panel pick ranks at once instead of after the decision delay.
+        let intendedNow = !FocusIntent.classify(activationAt: activationAt, launchedAt: nil,
+                                                inputs: inputs, lastSwitchCause: lastSwitchCause).isSteal
+        let noticed = activations.notice(app, kept: intendedNow ? true : nil)
+        keep(noticed.released)
+        // The prompt may lose focus before its decision, and its password field
+        // with it.
+        let passwordFieldAtNotice = Self.showsPasswordField(app)
+        let session = self.session
         DispatchQueue.main.asyncAfter(deadline: .now() + FocusIntent.decisionDelay) { [weak self] in
-            self?.decide(app, activationAt: activationAt, launchedAt: launchedAt)
+            guard let self, self.isRunning, self.session == session else { return }
+            let kept = self.decide(app, activationAt: activationAt, launchedAt: launchedAt,
+                                   passwordFieldAtNotice: passwordFieldAtNotice)
+            self.keep(self.activations.settle(noticed.id, kept: kept))
         }
     }
 
-    private func decide(_ app: NSRunningApplication, activationAt: TimeInterval, launchedAt: TimeInterval?) {
-        undecided = max(0, undecided - 1)
-        guard isRunning else { return }
-        defer { restoreRanks() }
+    private func keep(_ apps: [NSRunningApplication]) {
+        apps.forEach { onKeep?($0) }
+    }
+
+    /// Returns whether the app keeps focus, and so its rank.
+    private func decide(_ app: NSRunningApplication, activationAt: TimeInterval, launchedAt: TimeInterval?,
+                        passwordFieldAtNotice: Bool) -> Bool {
         let verdict = FocusIntent.classify(activationAt: activationAt, launchedAt: launchedAt,
                                            inputs: inputs, lastSwitchCause: lastSwitchCause)
+        let showsPasswordField = verdict.isSteal && (passwordFieldAtNotice || Self.showsPasswordField(app))
         let exemption = FocusIntent.exemption(bundleID: app.bundleIdentifier,
                                               isRegularApp: app.activationPolicy == .regular,
-                                              showsPasswordField: verdict.isSteal && Self.showsPasswordField(app),
+                                              showsPasswordField: showsPasswordField,
                                               allowed: Preferences.focusGuardAllowedApps)
         let leavingPrompt = promptInFront
         promptInFront = exemption?.mayHoldTyping ?? false
@@ -238,31 +256,32 @@ final class FocusGuard {
             tally.intended += 1
             lastIntentional = app
             lastSwitchCause = cause
-            unreverted.removeAll()
             trace?("intended: \(describe(app)), \(cause.kind) \(ms(activationAt - cause.at)) before\(launchNote)")
+            return true
         case .launched(let cause):
             tally.launched += 1
             lastIntentional = app
             lastSwitchCause = cause
-            unreverted.removeAll()
             trace?("launched: \(describe(app)), \(cause.kind) \(ms(activationAt - cause.at)) before\(launchNote)")
+            return true
         case .steal:
             if let exemption {
                 tally.allowed += 1
                 trace?("allowed: \(describe(app)), \(exemption)\(launchNote)")
-            } else if leavingPrompt {
+                return true
+            }
+            if leavingPrompt {
                 tally.allowed += 1
                 lastIntentional = app
-                unreverted.removeAll()
                 trace?("allowed: \(describe(app)), it took focus from a prompt\(launchNote)")
-            } else {
-                handleSteal(app, activationAt: activationAt, launchNote: launchNote)
+                return true
             }
+            return handleSteal(app, activationAt: activationAt, launchNote: launchNote)
         }
     }
 
-    private func handleSteal(_ app: NSRunningApplication, activationAt: TimeInterval, launchNote: String) {
-        unreverted = unreverted.filter { $0.processIdentifier != app.processIdentifier } + [app]
+    /// Returns whether the stealer keeps focus.
+    private func handleSteal(_ app: NSRunningApplication, activationAt: TimeInterval, launchNote: String) -> Bool {
         tally.steals += 1
         if trace != nil {
             let before = inputs.filter { $0.at <= activationAt }
@@ -277,38 +296,34 @@ final class FocusGuard {
               target.processIdentifier != app.processIdentifier else {
             trace?("  nothing to revert to")
             lastIntentional = app
-            unreverted.removeAll()
-            return
+            return true
         }
 
         // Input between the activation and this decision may be switching apps
         // itself, so a revert now would fight it.
         if let cancel = firstCancel(after: activationAt) {
             acceptSteal(cancelledBy: cancel, after: "steal", at: activationAt)
-            return
+            return true
         }
 
-        // A newer activation in front decides for itself, and a newer steal's
-        // revert takes this one back with it.
+        // A newer activation in front is judged on its own, and focus that is
+        // already back needs nothing. Either way this one never ranks.
         let front = NSWorkspace.shared.frontmostApplication
         guard front?.processIdentifier == app.processIdentifier else {
             trace?("  frontmost is already \(describe(front)), nothing to revert")
-            if front?.processIdentifier == target.processIdentifier {
-                // Focus is back, with an earlier revert or by itself.
-                land(unreverted)
-            }
-            return
+            return false
         }
         trace?("  reverting to \(describe(target)) \(ms(ProcessInfo.processInfo.systemUptime - activationAt)) after the steal")
-        attemptRevert(stealers: unreverted, to: target, with: .activate, tried: [])
+        attemptRevert(stealer: app, to: target, with: .activate, tried: [])
+        return false
     }
 
     // MARK: - Revert
 
-    private func attemptRevert(stealers: [NSRunningApplication], to target: NSRunningApplication,
+    private func attemptRevert(stealer: NSRunningApplication, to target: NSRunningApplication,
                                with method: RevertMethod, tried: [RevertMethod]) {
         let flight = InFlightRevert(
-            stealers: stealers, target: target, method: method,
+            stealer: stealer, target: target, method: method,
             startedAt: ProcessInfo.processInfo.systemUptime,
             triedMethods: tried + [method])
         inFlight = flight
@@ -337,27 +352,7 @@ final class FocusGuard {
         tally.reverts[flight.method, default: (ok: 0, failed: 0)].ok += 1
         lastIntentional = flight.target
         promptInFront = false
-        land(flight.stealers)
-        restoreRanks()
-    }
-
-    private func land(_ stealers: [NSRunningApplication]) {
-        let isLanding = { (app: NSRunningApplication) in
-            stealers.contains { $0.processIdentifier == app.processIdentifier }
-        }
-        unreverted.removeAll(where: isLanding)
-        landed.removeAll(where: isLanding)
-        landed += stealers
-    }
-
-    /// Takes landed steals back out of the MRU order, latest first, once every
-    /// activation noticed so far has been judged: each stealer's rank was taken
-    /// with the earlier ones still ranked, and one still undecided may join them.
-    private func restoreRanks() {
-        guard undecided == 0, !landed.isEmpty else { return }
-        let stealers = landed
-        landed.removeAll()
-        stealers.reversed().forEach { onStealReverted?($0) }
+        keep(activations.notice(flight.target, kept: true).released)
     }
 
     /// Only a flight whose landing was not seen gets here.
@@ -374,15 +369,21 @@ final class FocusGuard {
         trace?("  \(flight.method.rawValue): FAILED, frontmost after \(ms(Self.revertCheckDelay)) is \(describe(front))")
 
         // Input since the call that may switch apps is the user taking over:
-        // whatever is in front now is theirs to keep.
+        // whatever is in front now is theirs to keep. A stealer still in front
+        // ranks after all, as it does when every method has failed.
+        let stealerHolds = front?.processIdentifier == flight.stealer.processIdentifier
         if let cancel = firstCancel(after: flight.startedAt) {
             acceptSteal(cancelledBy: cancel, after: "revert call", at: flight.startedAt)
+            if stealerHolds { keep(activations.notice(flight.stealer, kept: true).released) }
             return
         }
-        // Retry only while the stealer still holds focus.
-        guard front?.processIdentifier == flight.stealer.processIdentifier,
-              let fallback = RevertMethod.allCases.first(where: { !flight.triedMethods.contains($0) }) else { return }
-        attemptRevert(stealers: flight.stealers, to: flight.target, with: fallback, tried: flight.triedMethods)
+        guard stealerHolds else { return }
+        guard let fallback = RevertMethod.allCases.first(where: { !flight.triedMethods.contains($0) }) else {
+            trace?("  giving up, \(describe(front)) keeps focus")
+            keep(activations.notice(flight.stealer, kept: true).released)
+            return
+        }
+        attemptRevert(stealer: flight.stealer, to: flight.target, with: fallback, tried: flight.triedMethods)
     }
 
     /// Secure keyboard entry is on while a focused password field is in front.

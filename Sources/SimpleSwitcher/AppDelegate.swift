@@ -47,7 +47,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate, AppSw
         Preferences.registerDefaults()
 
         AppListProvider.startObserving()
-        focusGuard.onStealReverted = { AppListProvider.undoActivation(of: $0.processIdentifier) }
+        focusGuard.onKeep = { AppListProvider.noteActivation(of: $0.processIdentifier) }
+        focusGuard.onRunningChange = { AppListProvider.activationsFromFocusGuard = $0 }
 
         // Setup hotkey manager (does NOT take over Cmd+Tab yet — see enableSwitching)
         hotkeyManager = HotkeyManager()

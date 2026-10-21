@@ -12,9 +12,10 @@ struct AppInfo {
 class AppListProvider {
     // Track app activation order (most recent first)
     private static var mruOrder: [pid_t] = []
-    // Each app's latest move to the head, so the focus guard can undo a steal's.
-    private static var promotions: [pid_t: RecentApps.Promotion] = [:]
     private static var isObserving = false
+    /// While the focus guard runs it reports each activation once it is judged
+    /// (`FocusGuard.onKeep`), so a steal it sends back never ranks.
+    static var activationsFromFocusGuard = false
 
     /// Start observing app activations to track MRU order
     static func startObserving() {
@@ -28,9 +29,9 @@ class AppListProvider {
             object: nil,
             queue: .main
         ) { notification in
-            if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
-                updateMRU(app.processIdentifier)
-            }
+            guard !activationsFromFocusGuard,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            updateMRU(app.processIdentifier)
         }
 
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -40,7 +41,6 @@ class AppListProvider {
         ) { notification in
             if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
                 mruOrder.removeAll { $0 == app.processIdentifier }
-                promotions[app.processIdentifier] = nil
             }
         }
     }
@@ -67,18 +67,14 @@ class AppListProvider {
                                             frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier)
     }
 
-    /// Update MRU order when an app is activated
-    private static func updateMRU(_ pid: pid_t) {
-        let moved = RecentApps.promote(pid, in: mruOrder, cap: 50)
-        mruOrder = moved.order
-        promotions[pid] = moved.promotion
+    /// An activation the focus guard judged as keeping focus.
+    static func noteActivation(of pid: pid_t) {
+        updateMRU(pid)
     }
 
-    /// Takes back an activation the focus guard reverted, so the stealer does not
-    /// rank second and catch the next quick Cmd+Tab.
-    static func undoActivation(of pid: pid_t) {
-        guard let promotion = promotions.removeValue(forKey: pid) else { return }
-        mruOrder = RecentApps.undo(promotion, in: mruOrder)
+    /// Update MRU order when an app is activated
+    private static func updateMRU(_ pid: pid_t) {
+        mruOrder = RecentApps.promote(pid, in: mruOrder, cap: 50)
     }
 
     /// The switcher's app list, MRU-ordered — what actually gets shown.

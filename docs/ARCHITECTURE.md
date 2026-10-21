@@ -112,9 +112,10 @@ the switch had the launch's own cause, as when a launcher hands focus back on it
 A steal is sent back as soon as it is judged: `NSRunningApplication.activate` brings back the latest app brought
 forward on purpose, with an AX fallback. A click, confirm key, shortcut, modifier release or panel action between
 the steal and its judgement cancels the revert, since it may be switching apps itself, and a later steal goes back
-to the app the user kept. A steal that loses focus to a newer one before its judgement goes back with the newer
-one's revert. Once a revert lands, `AppListProvider.undoActivation(of:)` puts each app it sent back where it
-ranked, so a quick Cmd+Tab still reaches the previous app.
+to the app the user kept. While the guard runs, `AppListProvider` ranks an activation only once `FocusGuard`
+judges it as keeping focus, in the order activations happened (`ActivationQueue`). A steal sent back never ranks,
+so a quick Cmd+Tab still reaches the previous app. An activation whose cause is already seen, such as a panel
+pick, ranks at once unless an older one is still being judged.
 
 The guard fails open. macOS's agents (`com.apple.*` with no Dock icon, or no bundle id), the listed prompts
 (Apple's and GPG's pinentry-mac), any app that takes focus while secure keyboard entry is on, as a focused

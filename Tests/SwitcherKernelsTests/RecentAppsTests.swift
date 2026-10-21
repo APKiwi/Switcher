@@ -13,13 +13,8 @@ enum RecentAppsTests {
         Check.run("testFrontmostWithNoWindowsStillLeads", testFrontmostWithNoWindowsStillLeads)
         Check.run("testNoFrontmostKeepsZOrder", testNoFrontmostKeepsZOrder)
         Check.run("testEmptyInput", testEmptyInput)
-        Check.run("testPromoteRemembersTheRank", testPromoteRemembersTheRank)
+        Check.run("testPromoteMovesToTheHead", testPromoteMovesToTheHead)
         Check.run("testPromoteKeepsTheCap", testPromoteKeepsTheCap)
-        Check.run("testUndoAfterARevertRestoresTheOrder", testUndoAfterARevertRestoresTheOrder)
-        Check.run("testUndoOfALaunchDropsItsRank", testUndoOfALaunchDropsItsRank)
-        Check.run("testUndoBeforeTheRevertIsRecordedGivesTheSameOrder", testUndoBeforeTheRevertIsRecordedGivesTheSameOrder)
-        Check.run("testUndoClampsToTheEnd", testUndoClampsToTheEnd)
-        Check.run("testTwoStealsUndoLatestFirst", testTwoStealsUndoLatestFirst)
     }
 
     /// An app owns several windows, so its pid repeats; the frontmost of them is
@@ -57,56 +52,14 @@ enum RecentAppsTests {
         Check.equal(RecentApps.orderedUnique(pids: [], frontmost: 7), [7])
     }
 
-    // MARK: - Activations and the focus guard's undo
+    // MARK: - Activations
 
-    private static func testPromoteRemembersTheRank() {
-        let moved = RecentApps.promote(30, in: [10, 20, 30, 40], cap: 50)
-        Check.equal(moved.order, [30, 10, 20, 40])
-        Check.equal(moved.promotion, RecentApps.Promotion(pid: 30, previousIndex: 2))
-        Check.equal(RecentApps.promote(99, in: [10], cap: 50).promotion.previousIndex, nil)
+    private static func testPromoteMovesToTheHead() {
+        Check.equal(RecentApps.promote(30, in: [10, 20, 30, 40], cap: 50), [30, 10, 20, 40])
+        Check.equal(RecentApps.promote(99, in: [10], cap: 50), [99, 10])
     }
 
     private static func testPromoteKeepsTheCap() {
-        Check.equal(RecentApps.promote(99, in: [10, 20, 30], cap: 3).order, [99, 10, 20])
-    }
-
-    /// Previous app T, stealer S. The steal and the revert leave [T, S, ...],
-    /// and the undo must give back the order from before the steal.
-    private static func testUndoAfterARevertRestoresTheOrder() {
-        let before: [pid_t] = [1, 2, 3, 9, 4]
-        let steal = RecentApps.promote(9, in: before, cap: 50)
-        let revert = RecentApps.promote(1, in: steal.order, cap: 50)
-        Check.equal(revert.order, [1, 9, 2, 3, 4])
-        Check.equal(RecentApps.undo(steal.promotion, in: revert.order), before)
-    }
-
-    /// The common steal: an app that just launched had no rank to go back to.
-    private static func testUndoOfALaunchDropsItsRank() {
-        let steal = RecentApps.promote(9, in: [1, 2], cap: 50)
-        let revert = RecentApps.promote(1, in: steal.order, cap: 50)
-        Check.equal(RecentApps.undo(steal.promotion, in: revert.order), [1, 2])
-    }
-
-    /// The guard and the MRU tracker observe the same notice, in either order.
-    private static func testUndoBeforeTheRevertIsRecordedGivesTheSameOrder() {
-        let steal = RecentApps.promote(9, in: [1, 2, 3, 9, 4], cap: 50)
-        let undone = RecentApps.undo(steal.promotion, in: steal.order)
-        Check.equal(RecentApps.promote(1, in: undone, cap: 50).order, [1, 2, 3, 9, 4])
-    }
-
-    /// A second steal before the revert: each rank was taken with the earlier
-    /// stealer still in the list, so the latest promotion is undone first.
-    private static func testTwoStealsUndoLatestFirst() {
-        let before: [pid_t] = [1, 2, 8, 3]
-        let first = RecentApps.promote(9, in: before, cap: 50)
-        let second = RecentApps.promote(8, in: first.order, cap: 50)
-        let revert = RecentApps.promote(1, in: second.order, cap: 50)
-        let undone = [second.promotion, first.promotion].reduce(revert.order) { RecentApps.undo($1, in: $0) }
-        Check.equal(undone, before)
-    }
-
-    private static func testUndoClampsToTheEnd() {
-        let promotion = RecentApps.Promotion(pid: 9, previousIndex: 7)
-        Check.equal(RecentApps.undo(promotion, in: [9, 1, 2]), [1, 2, 9])
+        Check.equal(RecentApps.promote(99, in: [10, 20, 30], cap: 3), [99, 10, 20])
     }
 }

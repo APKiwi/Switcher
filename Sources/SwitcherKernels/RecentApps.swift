@@ -37,38 +37,11 @@ public enum RecentApps {
         return ordered
     }
 
-    /// Where an activation moved an app from, so the move can be undone.
-    public struct Promotion: Equatable {
-        public let pid: pid_t
-        /// The app's rank before it moved to the head, nil if it had none.
-        public let previousIndex: Int?
-
-        public init(pid: pid_t, previousIndex: Int?) {
-            self.pid = pid
-            self.previousIndex = previousIndex
-        }
-    }
-
     /// Moves `pid` to the head, as an activation does, keeping at most `cap` apps.
-    public static func promote(_ pid: pid_t, in order: [pid_t], cap: Int) -> (order: [pid_t], promotion: Promotion) {
-        let previousIndex = order.firstIndex(of: pid)
+    public static func promote(_ pid: pid_t, in order: [pid_t], cap: Int) -> [pid_t] {
         var result = order.filter { $0 != pid }
         result.insert(pid, at: 0)
         if result.count > cap { result.removeLast(result.count - cap) }
-        return (result, Promotion(pid: pid, previousIndex: previousIndex))
-    }
-
-    /// Puts a promoted app back where it was, or drops its rank if it had none.
-    ///
-    /// The focus guard calls this once it has reverted a steal. Without it the
-    /// stealer would rank second, so a quick Cmd+Tab would go to it instead of
-    /// the app used before. Apps promoted since keep their order: reverting
-    /// moved the previous app back to the head, and this only moves the stealer.
-    public static func undo(_ promotion: Promotion, in order: [pid_t]) -> [pid_t] {
-        var result = order.filter { $0 != promotion.pid }
-        if let index = promotion.previousIndex {
-            result.insert(promotion.pid, at: min(index, result.count))
-        }
         return result
     }
 }
