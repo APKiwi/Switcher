@@ -44,9 +44,22 @@ itself and came forward 5.5 s after it started, on a click.
 
 Read from `Info.plist` on 27.0.1. SecurityAgent (`com.apple.SecurityAgent`), the LocalAuthentication agent behind
 Touch ID and password sheets (`com.apple.LocalAuthentication.UIAgent`) and `com.apple.UserNotificationCenter` set
-`NSUIElement`. CoreServicesUIAgent (`com.apple.coreservices.uiagent`, Gatekeeper) and Little Snitch Agent
-(`at.obdev.littlesnitch.agent`) set `LSUIElement`. All run as agents, so the not-a-regular-app rule covers them.
-The Apple agents are also listed by bundle id, with System Settings, which is a regular app.
+`NSUIElement`. CoreServicesUIAgent (`com.apple.coreservices.uiagent`, Gatekeeper) sets `LSUIElement`. All run as
+`com.apple.*` agents, so the macOS-agent rule covers them, and they are also listed by bundle id, with System
+Settings, which is a regular app.
+
+Third-party agents are guarded, read 2026-10-21:
+
+| Bundle | Id | Agent |
+| --- | --- | --- |
+| Little Snitch Agent, connection alerts | `at.obdev.littlesnitch.agent` | `LSUIElement` true |
+| League of Legends client helper | `com.riotgames.LeagueofLegends.LeagueClient` | `LSUIElement` 1 |
+| League of Legends client window | `com.riotgames.LeagueofLegends.LeagueClientUx` | `LSUIElement` 0 |
+| League of Legends game | `com.riotgames.LeagueofLegends.GameClient` | `LSUIElement` 0 |
+
+When every agent counted as a prompt, League's helper coming forward made its own client window's next activation
+read as leaving a prompt, so the guard let it through. Little Snitch ignores keystrokes for the first second after
+an alert appears and offers no setting to stop the alert taking focus.
 
 ## Not yet measured
 
@@ -54,7 +67,11 @@ The Apple agents are also listed by bundle id, with System Settings, which is a 
   Until it is measured, a Space change noticed up to `decisionDelay` after an activation counts as its cause. A
   swipe is never swiped back, and a steal from another Space is let through.
 - Launches slower than a few seconds, with and without the user moving on.
-- Live admin prompts (`sfltool` background item prompts, Little Snitch connection and changed-binary alerts). The
-  exemption rests on the `Info.plist` evidence above, not on a prompt seen by the probe.
+- Live admin prompts (`sfltool` background item prompts). The exemption rests on the `Info.plist` evidence above,
+  not on a prompt seen by the probe.
+- Whether a reverted Little Snitch connection or changed-binary alert stays on screen. A panel that hides when its
+  app deactivates would vanish, and the user would have to allow the agent.
+- How often League of Legends' client and game activate in a row, and whether any app takes focus straight back
+  after a revert. A revert is now called 150 ms after a steal instead of one second, so it should land about 175 ms after it.
 
 Re-run the probe after a major macOS update.

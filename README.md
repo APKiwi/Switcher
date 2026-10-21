@@ -115,11 +115,11 @@ defaults delete kiwi.ap.switcher grayscaleIcons             # revert
 
 ## Focus guard
 
-With **Stop apps stealing focus** on, Switcher watches for the input that can switch apps: clicks, Return, shortcuts, modifier releases and Space changes. It classifies key presses and never records them. When an app comes forward and none of that asked for it, Switcher sends you back to where you were after a second. Click the app within that second to keep it.
+With **Stop apps stealing focus** on, Switcher watches for the input that can switch apps: clicks, Return, shortcuts, modifier releases and Space changes. It classifies key presses and never records them. When an app comes forward and none of that asked for it, Switcher sends you back to where you were within about a fifth of a second. Switch to the app if you wanted it after all.
 
 An app you launched may take up to a minute to come forward while you wait. If you go back to work elsewhere first, its late arrival counts as a steal.
 
-Password and Touch ID prompts, Gatekeeper, menu-bar apps and agents (Little Snitch's alerts among them) and System Settings always keep focus. To let another app through, add its bundle identifier:
+Password and Touch ID prompts, Gatekeeper, macOS's other background agents and System Settings always keep focus. Third-party menu-bar apps and agents are guarded like any app, so a Little Snitch alert no longer takes your typing. Click it to answer. To let an app or agent through, add its bundle identifier (Little Snitch's alerts come from `at.obdev.littlesnitch.agent`):
 
 ```bash
 osascript -e 'id of app "Visual Studio Code"'                                        # find the identifier

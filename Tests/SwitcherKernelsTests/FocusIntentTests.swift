@@ -41,7 +41,8 @@ enum FocusIntentTests {
         Check.run("testWhichInputsCancelARevert", testWhichInputsCancelARevert)
         // E. Exemptions
         Check.run("testSystemPromptsAreExemptEvenIfRegular", testSystemPromptsAreExemptEvenIfRegular)
-        Check.run("testAgentsAreExempt", testAgentsAreExempt)
+        Check.run("testMacOSAgentsAreExempt", testMacOSAgentsAreExempt)
+        Check.run("testThirdPartyAgentsAreGuarded", testThirdPartyAgentsAreGuarded)
         Check.run("testUserAllowedAppsAreExempt", testUserAllowedAppsAreExempt)
         Check.run("testOrdinaryAppsAreNotExempt", testOrdinaryAppsAreNotExempt)
         Check.run("testOnlyPromptsMayHoldTyping", testOnlyPromptsMayHoldTyping)
@@ -225,9 +226,9 @@ enum FocusIntentTests {
         Check.equal(FocusIntent.flagsKind(from: [], to: [.command]), .typing)
     }
 
-    /// A revert waits out the grace period. Deliberate input cancels it, typing
-    /// does not (that is the input the steal is taking), and neither does a
-    /// Space change, which a steal from another Space causes itself.
+    /// Input between a steal and its revert that may switch apps itself cancels
+    /// the revert. Typing does not (that is the input the steal is taking), and
+    /// neither does a Space change, which a steal from another Space causes itself.
     static func testWhichInputsCancelARevert() {
         Check.expect(FocusIntent.InputKind.click.cancelsRevert)
         Check.expect(FocusIntent.InputKind.confirmKey.cancelsRevert)
@@ -248,12 +249,23 @@ enum FocusIntentTests {
         }
     }
 
-    /// Little Snitch's alerts come from an `LSUIElement` agent.
-    static func testAgentsAreExempt() {
-        let agent = "at.obdev.littlesnitch.agent"
-        Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: []), .notARegularApp)
-        Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: [agent]), .notARegularApp)
-        Check.equal(FocusIntent.exemption(bundleID: nil, isRegularApp: false, allowed: []), .notARegularApp)
+    /// macOS's own prompts come from agents that are not all listed, such as the
+    /// Accessibility and Bluetooth ones. An agent with no bundle id is unknown.
+    static func testMacOSAgentsAreExempt() {
+        let agent = "com.apple.accessibility.universalAccessAuthWarn"
+        Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: []), .systemAgent)
+        Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: [agent]), .systemAgent)
+        Check.equal(FocusIntent.exemption(bundleID: nil, isRegularApp: false, allowed: []), .systemAgent)
+    }
+
+    /// Little Snitch's alerts and League's client helper come from `LSUIElement`
+    /// agents (`FocusIntentSpecs.md`). Neither is a prompt that takes typing.
+    static func testThirdPartyAgentsAreGuarded() {
+        for agent in ["at.obdev.littlesnitch.agent", "com.riotgames.LeagueofLegends.LeagueClient"] {
+            Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: []), nil)
+            Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: [agent]), .allowedByUser)
+        }
+        Check.equal(FocusIntent.exemption(bundleID: "com.apple.Chess", isRegularApp: true, allowed: []), nil)
     }
 
     static func testUserAllowedAppsAreExempt() {
@@ -270,7 +282,7 @@ enum FocusIntentTests {
     /// a revert would send the rest of a password to the app behind it.
     static func testOnlyPromptsMayHoldTyping() {
         Check.expect(FocusIntent.Exemption.systemPrompt.mayHoldTyping)
-        Check.expect(FocusIntent.Exemption.notARegularApp.mayHoldTyping)
+        Check.expect(FocusIntent.Exemption.systemAgent.mayHoldTyping)
         Check.expect(!FocusIntent.Exemption.allowedByUser.mayHoldTyping)
     }
 }

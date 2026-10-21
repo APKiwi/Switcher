@@ -109,15 +109,18 @@ started and keeps its intent while the user waits for it, including through anot
 Typing or a shortcut after the launch ends that claim, and so does a deliberate switch to another app, unless
 the switch had the launch's own cause, as when a launcher hands focus back on its Return.
 
-A steal stands for one second, then `NSRunningApplication.activate` brings back the latest app brought forward
-on purpose, with an AX fallback. A click, confirm key, shortcut, modifier release or panel action in that second
-cancels the revert at once, and a later steal goes back to the app the user kept. Once a revert lands,
-`AppListProvider.undoActivation(of:)` puts each app it sent back where it ranked, so a quick Cmd+Tab still
-reaches the previous app.
+A steal is sent back as soon as it is judged: `NSRunningApplication.activate` brings back the latest app brought
+forward on purpose, with an AX fallback. A click, confirm key, shortcut, modifier release or panel action between
+the steal and its judgement cancels the revert, since it may be switching apps itself, and a later steal goes back
+to the app the user kept. A steal that loses focus to a newer one before its judgement goes back with the newer
+one's revert. Once a revert lands, `AppListProvider.undoActivation(of:)` puts each app it sent back where it
+ranked, so a quick Cmd+Tab still reaches the previous app.
 
-The guard fails open. Agents and menu-bar apps, Apple's prompt agents, System Settings and the user's
-`focusGuardAllowedApps` keep focus, and so does any app that takes focus from in front of a prompt: a revert
-would send the rest of a password to the app behind it. Evidence and open questions are in
+The guard fails open. macOS's agents (`com.apple.*` with no Dock icon, or no bundle id), the listed prompt agents,
+System Settings and the user's `focusGuardAllowedApps` keep focus, and so does any app that takes focus from in
+front of a macOS prompt: a revert would send the rest of a password to the app behind it. Third-party agents, such
+as Little Snitch's alerts and League of Legends' client helper, are guarded like apps. Counting them as prompts
+let a game's helper process switch the guard off for the game's own window. Evidence and open questions are in
 `FocusIntentSpecs.md`.
 
 ## Panel and preferences

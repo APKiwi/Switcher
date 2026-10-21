@@ -6,18 +6,17 @@ import SwitcherKernels
 /// brings itself forward while it boots.
 ///
 /// `FocusIntent` decides what was asked for. This class feeds it input and
-/// activations and does the revert. A steal stands for `grace` first, so a
-/// click on the stealer keeps it. It fails open: security prompts, agents and
-/// allowed apps keep focus (`FocusIntent.exemption`), and so does an app that
-/// takes focus from in front of a prompt.
+/// activations and does the revert, as soon as a steal is decided. It fails
+/// open: security prompts, macOS's agents and allowed apps keep focus
+/// (`FocusIntent.exemption`), and so does an app that takes focus from in front
+/// of a prompt.
 ///
 /// Needs only Accessibility: on macOS 27 global monitors receive other apps'
 /// key presses with it (`FocusIntentSpecs.md`). Key presses are classified and
 /// counted, never recorded.
 final class FocusGuard {
 
-    /// How long a steal stands before the revert, so deliberate input can keep it.
-    static let grace: TimeInterval = 1.0
+    /// How long after a revert's call its landing is checked, if it was not seen.
     static let revertCheckDelay: TimeInterval = 0.5
 
     /// `activate` brought the previous app back in every measured revert. The AX
@@ -44,13 +43,6 @@ final class FocusGuard {
     private(set) var tally = Tally()
     private(set) var isRunning = false
 
-    private struct PendingRevert {
-        let timer: Timer
-        let activationAt: TimeInterval
-        /// This steal and any it replaced, oldest first.
-        let stealers: [NSRunningApplication]
-    }
-
     private struct InFlightRevert {
         /// The app holding focus is the last.
         let stealers: [NSRunningApplication]
@@ -71,7 +63,9 @@ final class FocusGuard {
     private var lastSwitchCause: FocusIntent.Input?
     /// Whether the latest activation was a prompt that may be taking a password.
     private var promptInFront = false
-    private var pendingRevert: PendingRevert?
+    /// Steals not sent back yet, oldest first. One that lost focus to a newer
+    /// steal before its own decision goes back with that one's revert.
+    private var unreverted: [NSRunningApplication] = []
     private var inFlight: InFlightRevert?
     private var monitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
@@ -122,8 +116,7 @@ final class FocusGuard {
         monitors.removeAll()
         observers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         observers.removeAll()
-        pendingRevert?.timer.invalidate()
-        pendingRevert = nil
+        unreverted.removeAll()
         inFlight = nil
         inputs.removeAll()
         lastIntentional = nil
@@ -172,22 +165,16 @@ final class FocusGuard {
         if let first = inputs.first, first.at < horizon {
             inputs.removeAll { $0.at < horizon }
         }
-        // Settled now rather than when the grace ends, so a newer steal in that
-        // second reverts to the app the user just accepted.
-        if kind.cancelsRevert, let pending = pendingRevert, timestamp > pending.activationAt {
-            acceptSteal(at: pending.activationAt, cancelledBy: input)
-        }
     }
 
     private func firstCancel(after time: TimeInterval) -> FocusIntent.Input? {
         inputs.filter { $0.kind.cancelsRevert && $0.at > time }.min { $0.at < $1.at }
     }
 
-    /// Deliberate input after a steal means the user is dealing with it: whatever
-    /// is in front now is where focus belongs.
+    /// Input after a steal that may switch apps means the user is acting on it:
+    /// whatever is in front now is where focus belongs.
     private func acceptSteal(at activationAt: TimeInterval, cancelledBy cause: FocusIntent.Input) {
-        pendingRevert?.timer.invalidate()
-        pendingRevert = nil
+        unreverted.removeAll()
         let front = NSWorkspace.shared.frontmostApplication
         if let front, front.processIdentifier != ownPID { lastIntentional = front }
         lastSwitchCause = cause
@@ -240,11 +227,13 @@ final class FocusGuard {
             tally.intended += 1
             lastIntentional = app
             lastSwitchCause = cause
+            unreverted.removeAll()
             trace?("intended: \(describe(app)), \(cause.kind) \(ms(activationAt - cause.at)) before\(launchNote)")
         case .launched(let cause):
             tally.launched += 1
             lastIntentional = app
             lastSwitchCause = cause
+            unreverted.removeAll()
             trace?("launched: \(describe(app)), \(cause.kind) \(ms(activationAt - cause.at)) before\(launchNote)")
         case .steal:
             if let exemption {
@@ -253,6 +242,7 @@ final class FocusGuard {
             } else if leavingPrompt {
                 tally.allowed += 1
                 lastIntentional = app
+                unreverted.removeAll()
                 trace?("allowed: \(describe(app)), it took focus from a prompt\(launchNote)")
             } else {
                 handleSteal(app, activationAt: activationAt, launchNote: launchNote)
@@ -261,11 +251,7 @@ final class FocusGuard {
     }
 
     private func handleSteal(_ app: NSRunningApplication, activationAt: TimeInterval, launchNote: String) {
-        // A newer steal replaces the pending one, and its revert sends both back.
-        // Input that accepted the older stealer was already settled in `record`.
-        let stealers = (pendingRevert?.stealers ?? []).filter { $0.processIdentifier != app.processIdentifier } + [app]
-        pendingRevert?.timer.invalidate()
-        pendingRevert = nil
+        unreverted = unreverted.filter { $0.processIdentifier != app.processIdentifier } + [app]
         tally.steals += 1
         if trace != nil {
             let before = inputs.filter { $0.at <= activationAt }
@@ -280,40 +266,30 @@ final class FocusGuard {
               target.processIdentifier != app.processIdentifier else {
             trace?("  nothing to revert to")
             lastIntentional = app
+            unreverted.removeAll()
             return
         }
 
-        // Input between the activation and this decision.
+        // Input between the activation and this decision may be switching apps
+        // itself, so a revert now would fight it.
         if let cancel = firstCancel(after: activationAt) {
             acceptSteal(at: activationAt, cancelledBy: cancel)
             return
         }
 
-        let remaining = max(0, Self.grace - (ProcessInfo.processInfo.systemUptime - activationAt))
-        let timer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
-            self?.graceExpired(stealers: stealers, target: target)
+        // A newer activation in front decides for itself, and a newer steal's
+        // revert takes this one back with it.
+        let front = NSWorkspace.shared.frontmostApplication
+        guard front?.processIdentifier == app.processIdentifier else {
+            trace?("  frontmost is already \(describe(front)), nothing to revert")
+            if front?.processIdentifier == target.processIdentifier { unreverted.removeAll() }
+            return
         }
-        pendingRevert = PendingRevert(timer: timer, activationAt: activationAt, stealers: stealers)
-        trace?("  reverting to \(describe(target)) \(ms(Self.grace)) after the steal unless there is deliberate input")
+        trace?("  reverting to \(describe(target)) \(ms(ProcessInfo.processInfo.systemUptime - activationAt)) after the steal")
+        attemptRevert(stealers: unreverted, to: target, with: .activate, tried: [])
     }
 
     // MARK: - Revert
-
-    private func graceExpired(stealers: [NSRunningApplication], target: NSRunningApplication) {
-        pendingRevert = nil
-        let stealer = stealers[stealers.count - 1]
-        let front = NSWorkspace.shared.frontmostApplication
-        guard front?.processIdentifier == stealer.processIdentifier else {
-            trace?("  frontmost is already \(describe(front)), nothing to revert")
-            return
-        }
-        guard !target.isTerminated else {
-            trace?("  \(describe(target)) has quit, nothing to revert to")
-            lastIntentional = stealer
-            return
-        }
-        attemptRevert(stealers: stealers, to: target, with: .activate, tried: [])
-    }
 
     private func attemptRevert(stealers: [NSRunningApplication], to target: NSRunningApplication,
                                with method: RevertMethod, tried: [RevertMethod]) {
@@ -344,6 +320,9 @@ final class FocusGuard {
 
     private func revertLanded(_ flight: InFlightRevert) {
         inFlight = nil
+        unreverted.removeAll { stealer in
+            flight.stealers.contains { $0.processIdentifier == stealer.processIdentifier }
+        }
         tally.reverts[flight.method, default: (ok: 0, failed: 0)].ok += 1
         lastIntentional = flight.target
         promptInFront = false

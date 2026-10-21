@@ -81,7 +81,7 @@ Building the bundle is allowed when relevant. Installing or opening it is a sepa
   update against `MinimizedStateSpecs.md`.
 - The recent-app cap is off by default. It limits the MRU-ordered list only. The show-all shortcut expands the
   current session without changing the saved preference.
-- The focus guard ships off and fails open. It never reverts an agent, a system prompt, or an app taking focus
+- The focus guard ships off and fails open. It never reverts a macOS agent, a system prompt, or an app taking focus
   from in front of one. A panel action that can change the frontmost app calls `noteSwitcherAction()` first.
 - Pure decision logic belongs in `SwitcherKernels`. A kernel with measured behavior keeps implementation,
   evidence in `*Specs.md`, and executable checks aligned.

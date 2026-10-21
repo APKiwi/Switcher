@@ -38,9 +38,10 @@ public enum FocusIntent {
 
         public var canSwitchApps: Bool { self != .typing }
 
-        /// Whether this input, arriving after a steal, means the user is dealing
-        /// with it and the revert should stand down. Typing is what the steal is
-        /// taking, and a steal from another Space changes the Space itself.
+        /// Whether this input, arriving between a steal and its revert, should
+        /// stand the revert down: it may be switching apps itself, or the user is
+        /// dealing with the steal. Typing is what the steal is taking, and a steal
+        /// from another Space changes the Space itself.
         public var cancelsRevert: Bool { self != .typing && self != .spaceChange }
 
         /// Whether this input, past a launch's slack, means the user went back to
@@ -99,7 +100,8 @@ public enum FocusIntent {
     public static let launchSlack: TimeInterval = 0.5
     /// A launch older than this is not waited for.
     public static let launchLifetime: TimeInterval = 60
-    /// Late input was measured at up to 11 ms behind the activation notice.
+    /// Late input was measured at up to 11 ms behind the activation notice. A
+    /// steal is sent back once it is decided, so this is also how long one stands.
     public static let decisionDelay: TimeInterval = 0.15
 
     /// - Parameters:
@@ -150,12 +152,13 @@ public enum FocusIntent {
 
     /// Why a steal is let through instead of reverted.
     public enum Exemption: Equatable {
-        /// An agent or menu-bar app, with no Dock icon. macOS's password, Touch ID
-        /// and Gatekeeper prompts all come from these (`NSUIElement`), as do
-        /// firewall alerts such as Little Snitch's.
-        case notARegularApp
         /// One of `systemPrompts`, listed so it holds even if one turns regular.
         case systemPrompt
+        /// A macOS agent with no Dock icon, or an agent with no bundle id.
+        /// macOS's password, Touch ID, Gatekeeper and permission prompts come
+        /// from these (`NSUIElement`), and not all of them are listed.
+        /// Third-party agents, such as Little Snitch's alerts, are guarded.
+        case systemAgent
         /// In the user's `focusGuardAllowedApps`.
         case allowedByUser
 
@@ -178,7 +181,7 @@ public enum FocusIntent {
     public static func exemption(bundleID: String?, isRegularApp: Bool,
                                  allowed: Set<String>) -> Exemption? {
         if let bundleID, systemPrompts.contains(bundleID) { return .systemPrompt }
-        if !isRegularApp { return .notARegularApp }
+        if !isRegularApp && (bundleID?.hasPrefix("com.apple.") ?? true) { return .systemAgent }
         if let bundleID, allowed.contains(bundleID) { return .allowedByUser }
         return nil
     }
