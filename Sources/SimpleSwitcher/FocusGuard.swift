@@ -221,14 +221,10 @@ final class FocusGuard {
                                                 inputs: inputs, lastSwitchCause: lastSwitchCause).isSteal
         let noticed = activations.notice(app, kept: intendedNow ? true : nil)
         keep(noticed.released)
-        // The prompt may lose focus before its decision, and its password field
-        // with it.
-        let passwordFieldAtNotice = Self.showsPasswordField(app)
         let session = self.session
         DispatchQueue.main.asyncAfter(deadline: .now() + FocusIntent.decisionDelay) { [weak self] in
             guard let self, self.isRunning, self.session == session else { return }
-            let kept = self.decide(app, activationAt: activationAt, launchedAt: launchedAt,
-                                   passwordFieldAtNotice: passwordFieldAtNotice)
+            let kept = self.decide(app, activationAt: activationAt, launchedAt: launchedAt)
             self.keep(self.activations.settle(noticed.id, kept: kept))
         }
     }
@@ -238,11 +234,13 @@ final class FocusGuard {
     }
 
     /// Returns whether the app keeps focus, and so its rank.
-    private func decide(_ app: NSRunningApplication, activationAt: TimeInterval, launchedAt: TimeInterval?,
-                        passwordFieldAtNotice: Bool) -> Bool {
+    private func decide(_ app: NSRunningApplication, activationAt: TimeInterval, launchedAt: TimeInterval?) -> Bool {
         let verdict = FocusIntent.classify(activationAt: activationAt, launchedAt: launchedAt,
                                            inputs: inputs, lastSwitchCause: lastSwitchCause)
-        let showsPasswordField = verdict.isSteal && (passwordFieldAtNotice || Self.showsPasswordField(app))
+        // Read only at the decision: at the notice the app losing focus may still
+        // hold secure input, and an unasked prompt cannot have taken any of a
+        // password in the 150 ms before it.
+        let showsPasswordField = verdict.isSteal && Self.showsPasswordField(app)
         let exemption = FocusIntent.exemption(bundleID: app.bundleIdentifier,
                                               isRegularApp: app.activationPolicy == .regular,
                                               showsPasswordField: showsPasswordField,

@@ -37,6 +37,15 @@ public enum RecentApps {
         return ordered
     }
 
+    /// The order the switcher sorts by: the MRU order with the frontmost app at
+    /// the head. The panel opens on index 1, "the app before this one", and
+    /// while the focus guard runs an activation ranks only once it is judged,
+    /// up to 150 ms after it, so the frontmost app may not have reached the head.
+    public static func sortOrder(mru: [pid_t], frontmost: pid_t?) -> [pid_t] {
+        guard let frontmost else { return mru }
+        return [frontmost] + mru.filter { $0 != frontmost }
+    }
+
     /// Moves `pid` to the head, as an activation does, keeping at most `cap` apps.
     public static func promote(_ pid: pid_t, in order: [pid_t], cap: Int) -> [pid_t] {
         var result = order.filter { $0 != pid }

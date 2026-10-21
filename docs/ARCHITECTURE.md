@@ -86,7 +86,9 @@ UserDefaults domain from the app bundle, so preference-sensitive diagnostics mus
 
 MRU order is seeded at launch from front-to-back window order, deduplicated by application, with the current
 front application forced to the head. macOS exposes no complete activation history, so this is a launch-time
-proxy. Workspace activation notifications replace it with real use immediately.
+proxy. Workspace activation notifications replace it with real use immediately, or the focus guard's judged
+activations while it runs. Sorting puts the frontmost application first, since one the guard has not judged
+yet has no rank.
 
 The optional recent-app limit applies after the single MRU sort. It is off by default and saves its enabled
 state separately from the selected count. A Dock badge does not exempt an application from the cap. Show-all

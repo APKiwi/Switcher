@@ -374,9 +374,11 @@ class AppListProvider {
 
     /// Sort apps by MRU order (most recently used first)
     private static func sortByMRU(_ apps: [AppInfo]) -> [AppInfo] {
+        let order = RecentApps.sortOrder(mru: mruOrder,
+                                         frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier)
         return apps.sorted { app1, app2 in
-            let idx1 = mruOrder.firstIndex(of: app1.pid) ?? Int.max
-            let idx2 = mruOrder.firstIndex(of: app2.pid) ?? Int.max
+            let idx1 = order.firstIndex(of: app1.pid) ?? Int.max
+            let idx2 = order.firstIndex(of: app2.pid) ?? Int.max
             return idx1 < idx2
         }
     }

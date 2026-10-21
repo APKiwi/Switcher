@@ -15,6 +15,7 @@ enum RecentAppsTests {
         Check.run("testEmptyInput", testEmptyInput)
         Check.run("testPromoteMovesToTheHead", testPromoteMovesToTheHead)
         Check.run("testPromoteKeepsTheCap", testPromoteKeepsTheCap)
+        Check.run("testSortOrderPutsTheFrontmostFirst", testSortOrderPutsTheFrontmostFirst)
     }
 
     /// An app owns several windows, so its pid repeats; the frontmost of them is
@@ -61,5 +62,15 @@ enum RecentAppsTests {
 
     private static func testPromoteKeepsTheCap() {
         Check.equal(RecentApps.promote(99, in: [10, 20, 30], cap: 3), [99, 10, 20])
+    }
+
+    /// Round-three review: a click on C whose event arrives after the notice
+    /// leaves C unranked for up to 150 ms. A Cmd+Tab then must still open on A,
+    /// the app before C, not on B.
+    private static func testSortOrderPutsTheFrontmostFirst() {
+        Check.equal(RecentApps.sortOrder(mru: [10, 20, 30], frontmost: 30), [30, 10, 20])
+        Check.equal(RecentApps.sortOrder(mru: [10, 20], frontmost: 99), [99, 10, 20])
+        Check.equal(RecentApps.sortOrder(mru: [10, 20], frontmost: 10), [10, 20])
+        Check.equal(RecentApps.sortOrder(mru: [10, 20], frontmost: nil), [10, 20])
     }
 }
