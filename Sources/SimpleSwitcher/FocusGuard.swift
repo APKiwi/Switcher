@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import SwitcherKernels
 
 /// Sends focus back when another app takes it unasked, such as an app that
@@ -66,6 +67,10 @@ final class FocusGuard {
     /// Steals not sent back yet, oldest first. One that lost focus to a newer
     /// steal before its own decision goes back with that one's revert.
     private var unreverted: [NSRunningApplication] = []
+    /// Steals sent back whose MRU ranks wait for `restoreRanks`, oldest first.
+    private var landed: [NSRunningApplication] = []
+    /// Activations noticed and not yet judged.
+    private var undecided = 0
     private var inFlight: InFlightRevert?
     private var monitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
@@ -117,6 +122,8 @@ final class FocusGuard {
         observers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         observers.removeAll()
         unreverted.removeAll()
+        landed.removeAll()
+        undecided = 0
         inFlight = nil
         inputs.removeAll()
         lastIntentional = nil
@@ -173,12 +180,12 @@ final class FocusGuard {
 
     /// Input after a steal that may switch apps means the user is acting on it:
     /// whatever is in front now is where focus belongs.
-    private func acceptSteal(at activationAt: TimeInterval, cancelledBy cause: FocusIntent.Input) {
+    private func acceptSteal(cancelledBy cause: FocusIntent.Input, after event: String, at time: TimeInterval) {
         unreverted.removeAll()
         let front = NSWorkspace.shared.frontmostApplication
         if let front, front.processIdentifier != ownPID { lastIntentional = front }
         lastSwitchCause = cause
-        trace?("  revert cancelled by \(cause.kind) \(ms(cause.at - activationAt)) after the steal, keeping \(describe(front))")
+        trace?("  revert cancelled by \(cause.kind) \(ms(cause.at - time)) after the \(event), keeping \(describe(front))")
     }
 
     // MARK: - Activation
@@ -206,17 +213,21 @@ final class FocusGuard {
         }
 
         let launchedAt = app.launchDate.map { activationAt - Date().timeIntervalSince($0) }
+        undecided += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + FocusIntent.decisionDelay) { [weak self] in
             self?.decide(app, activationAt: activationAt, launchedAt: launchedAt)
         }
     }
 
     private func decide(_ app: NSRunningApplication, activationAt: TimeInterval, launchedAt: TimeInterval?) {
+        undecided = max(0, undecided - 1)
         guard isRunning else { return }
+        defer { restoreRanks() }
         let verdict = FocusIntent.classify(activationAt: activationAt, launchedAt: launchedAt,
                                            inputs: inputs, lastSwitchCause: lastSwitchCause)
         let exemption = FocusIntent.exemption(bundleID: app.bundleIdentifier,
                                               isRegularApp: app.activationPolicy == .regular,
+                                              showsPasswordField: verdict.isSteal && Self.showsPasswordField(app),
                                               allowed: Preferences.focusGuardAllowedApps)
         let leavingPrompt = promptInFront
         promptInFront = exemption?.mayHoldTyping ?? false
@@ -273,7 +284,7 @@ final class FocusGuard {
         // Input between the activation and this decision may be switching apps
         // itself, so a revert now would fight it.
         if let cancel = firstCancel(after: activationAt) {
-            acceptSteal(at: activationAt, cancelledBy: cancel)
+            acceptSteal(cancelledBy: cancel, after: "steal", at: activationAt)
             return
         }
 
@@ -282,7 +293,10 @@ final class FocusGuard {
         let front = NSWorkspace.shared.frontmostApplication
         guard front?.processIdentifier == app.processIdentifier else {
             trace?("  frontmost is already \(describe(front)), nothing to revert")
-            if front?.processIdentifier == target.processIdentifier { unreverted.removeAll() }
+            if front?.processIdentifier == target.processIdentifier {
+                // Focus is back, with an earlier revert or by itself.
+                land(unreverted)
+            }
             return
         }
         trace?("  reverting to \(describe(target)) \(ms(ProcessInfo.processInfo.systemUptime - activationAt)) after the steal")
@@ -320,14 +334,30 @@ final class FocusGuard {
 
     private func revertLanded(_ flight: InFlightRevert) {
         inFlight = nil
-        unreverted.removeAll { stealer in
-            flight.stealers.contains { $0.processIdentifier == stealer.processIdentifier }
-        }
         tally.reverts[flight.method, default: (ok: 0, failed: 0)].ok += 1
         lastIntentional = flight.target
         promptInFront = false
-        // Each stealer's rank was taken with the earlier ones still ranked.
-        flight.stealers.reversed().forEach { onStealReverted?($0) }
+        land(flight.stealers)
+        restoreRanks()
+    }
+
+    private func land(_ stealers: [NSRunningApplication]) {
+        let isLanding = { (app: NSRunningApplication) in
+            stealers.contains { $0.processIdentifier == app.processIdentifier }
+        }
+        unreverted.removeAll(where: isLanding)
+        landed.removeAll(where: isLanding)
+        landed += stealers
+    }
+
+    /// Takes landed steals back out of the MRU order, latest first, once every
+    /// activation noticed so far has been judged: each stealer's rank was taken
+    /// with the earlier ones still ranked, and one still undecided may join them.
+    private func restoreRanks() {
+        guard undecided == 0, !landed.isEmpty else { return }
+        let stealers = landed
+        landed.removeAll()
+        stealers.reversed().forEach { onStealReverted?($0) }
     }
 
     /// Only a flight whose landing was not seen gets here.
@@ -343,12 +373,25 @@ final class FocusGuard {
         tally.reverts[flight.method, default: (ok: 0, failed: 0)].failed += 1
         trace?("  \(flight.method.rawValue): FAILED, frontmost after \(ms(Self.revertCheckDelay)) is \(describe(front))")
 
-        // Retry only while the stealer still holds focus and the user has not
-        // acted since: a click elsewhere in this half second is theirs to keep.
+        // Input since the call that may switch apps is the user taking over:
+        // whatever is in front now is theirs to keep.
+        if let cancel = firstCancel(after: flight.startedAt) {
+            acceptSteal(cancelledBy: cancel, after: "revert call", at: flight.startedAt)
+            return
+        }
+        // Retry only while the stealer still holds focus.
         guard front?.processIdentifier == flight.stealer.processIdentifier,
-              firstCancel(after: flight.startedAt) == nil,
               let fallback = RevertMethod.allCases.first(where: { !flight.triedMethods.contains($0) }) else { return }
         attemptRevert(stealers: flight.stealers, to: flight.target, with: fallback, tried: flight.triedMethods)
+    }
+
+    /// Secure keyboard entry is on while a focused password field is in front.
+    /// The session names the frontmost app as its holder whichever process
+    /// turned it on (`FocusIntentSpecs.md`), so this asks only whether it is on
+    /// with the app in front. A leaked one lets every steal through while it lasts.
+    private static func showsPasswordField(_ app: NSRunningApplication) -> Bool {
+        IsSecureEventInputEnabled()
+            && NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
     }
 
     // MARK: - Trace formatting

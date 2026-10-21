@@ -119,7 +119,7 @@ With **Stop apps stealing focus** on, Switcher watches for the input that can sw
 
 An app you launched may take up to a minute to come forward while you wait. If you go back to work elsewhere first, its late arrival counts as a steal.
 
-Password and Touch ID prompts, Gatekeeper, macOS's other background agents and System Settings always keep focus. Third-party menu-bar apps and agents are guarded like any app, so a Little Snitch alert no longer takes your typing. Click it to answer. To let an app or agent through, add its bundle identifier (Little Snitch's alerts come from `at.obdev.littlesnitch.agent`):
+Password and Touch ID prompts, Gatekeeper, GPG's passphrase prompt, any window that comes forward with a password field ready to type in, macOS's other background agents and System Settings always keep focus. Third-party menu-bar apps and agents are guarded like any app, so a Little Snitch alert no longer takes your typing. Click it to answer. To let an app or agent through, add its bundle identifier (Little Snitch's alerts come from `at.obdev.littlesnitch.agent`):
 
 ```bash
 osascript -e 'id of app "Visual Studio Code"'                                        # find the identifier

@@ -152,8 +152,11 @@ public enum FocusIntent {
 
     /// Why a steal is let through instead of reverted.
     public enum Exemption: Equatable {
-        /// One of `systemPrompts`, listed so it holds even if one turns regular.
-        case systemPrompt
+        /// One of `prompts`, listed so it holds even if one turns regular.
+        case prompt
+        /// The app took focus with a password field focused, such as a VPN or
+        /// sync client asking to sign in again.
+        case passwordField
         /// A macOS agent with no Dock icon, or an agent with no bundle id.
         /// macOS's password, Touch ID, Gatekeeper and permission prompts come
         /// from these (`NSUIElement`), and not all of them are listed.
@@ -168,19 +171,24 @@ public enum FocusIntent {
         public var mayHoldTyping: Bool { self != .allowedByUser }
     }
 
-    /// Apple's authorization, Touch ID, alert and Gatekeeper agents, plus System
-    /// Settings, which permission prompts open with no input behind it.
-    public static let systemPrompts: Set<String> = [
+    /// Apple's authorization, Touch ID, alert and Gatekeeper agents, System
+    /// Settings, which permission prompts open with no input behind it, and
+    /// GPG's passphrase prompt, a third-party agent.
+    public static let prompts: Set<String> = [
         "com.apple.SecurityAgent",
         "com.apple.LocalAuthentication.UIAgent",
         "com.apple.UserNotificationCenter",
         "com.apple.coreservices.uiagent",
         "com.apple.systempreferences",
+        "org.gpgtools.pinentry-mac",
     ]
 
-    public static func exemption(bundleID: String?, isRegularApp: Bool,
+    /// - Parameter showsPasswordField: whether secure keyboard entry is on with
+    ///   the app in front as it is judged, which a focused password field does.
+    public static func exemption(bundleID: String?, isRegularApp: Bool, showsPasswordField: Bool = false,
                                  allowed: Set<String>) -> Exemption? {
-        if let bundleID, systemPrompts.contains(bundleID) { return .systemPrompt }
+        if let bundleID, prompts.contains(bundleID) { return .prompt }
+        if showsPasswordField { return .passwordField }
         if !isRegularApp && (bundleID?.hasPrefix("com.apple.") ?? true) { return .systemAgent }
         if let bundleID, allowed.contains(bundleID) { return .allowedByUser }
         return nil

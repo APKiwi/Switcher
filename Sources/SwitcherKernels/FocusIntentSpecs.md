@@ -56,10 +56,25 @@ Third-party agents are guarded, read 2026-10-21:
 | League of Legends client helper | `com.riotgames.LeagueofLegends.LeagueClient` | `LSUIElement` 1 |
 | League of Legends client window | `com.riotgames.LeagueofLegends.LeagueClientUx` | `LSUIElement` 0 |
 | League of Legends game | `com.riotgames.LeagueofLegends.GameClient` | `LSUIElement` 0 |
+| Microsoft AutoUpdate window | `com.microsoft.autoupdate2` | not set |
+| Microsoft Update Assistant and AU Daemon | `com.microsoft.autoupdate.fba` | `LSUIElement` 1 |
 
 When every agent counted as a prompt, League's helper coming forward made its own client window's next activation
-read as leaving a prompt, so the guard let it through. Little Snitch ignores keystrokes for the first second after
+read as leaving a prompt, so the guard let it through. Microsoft Update Assistant launched in the same second as the
+AutoUpdate window it opened, and that window kept focus the same way. Little Snitch ignores keystrokes for the first second after
 an alert appears and offers no setting to stop the alert taking focus.
+
+Third-party credential prompts are agents too. GPG's pinentry-mac (`org.gpgtools.pinentry-mac`, `LSUIElement` true
+in its source) is listed with the prompts. OpenVPN Connect, OneDrive and Proton Mail Bridge are installed agents
+that can ask to sign in again with no input behind it, so a steal holding a focused password field keeps focus.
+
+## Secure keyboard entry
+
+Measured 2026-10-21 on 27.0.1 by calling `EnableSecureEventInput` from a command-line process and from an
+accessory app that never activated. In both, `IsSecureEventInputEnabled()` turned true and
+`CGSessionCopyCurrentDictionary()`'s `kCGSSessionSecureInputPID` named the frontmost app (Firefox), not the caller.
+The holder PID therefore cannot tell who turned it on. The guard asks only whether it is on while the stealer is
+in front, and a leaked secure input lets every steal through while it lasts.
 
 ## Not yet measured
 
@@ -69,6 +84,8 @@ an alert appears and offers no setting to stop the alert taking focus.
 - Launches slower than a few seconds, with and without the user moving on.
 - Live admin prompts (`sfltool` background item prompts). The exemption rests on the `Info.plist` evidence above,
   not on a prompt seen by the probe.
+- Whether secure input is already on 150 ms after a prompt takes focus with its password field focused, for
+  pinentry-mac, OpenVPN Connect and OneDrive's sign-in. A prompt that focuses its field later is reverted.
 - Whether a reverted Little Snitch connection or changed-binary alert stays on screen. A panel that hides when its
   app deactivates would vanish, and the user would have to allow the agent.
 - How often League of Legends' client and game activate in a row, and whether any app takes focus straight back

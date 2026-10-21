@@ -40,7 +40,8 @@ enum FocusIntentTests {
         Check.run("testOnlyCommandControlOptionReleasesCount", testOnlyCommandControlOptionReleasesCount)
         Check.run("testWhichInputsCancelARevert", testWhichInputsCancelARevert)
         // E. Exemptions
-        Check.run("testSystemPromptsAreExemptEvenIfRegular", testSystemPromptsAreExemptEvenIfRegular)
+        Check.run("testListedPromptsAreExemptEvenIfRegular", testListedPromptsAreExemptEvenIfRegular)
+        Check.run("testAFocusedPasswordFieldIsExempt", testAFocusedPasswordFieldIsExempt)
         Check.run("testMacOSAgentsAreExempt", testMacOSAgentsAreExempt)
         Check.run("testThirdPartyAgentsAreGuarded", testThirdPartyAgentsAreGuarded)
         Check.run("testUserAllowedAppsAreExempt", testUserAllowedAppsAreExempt)
@@ -243,9 +244,19 @@ enum FocusIntentTests {
 
     // MARK: - E. Exemptions
 
-    static func testSystemPromptsAreExemptEvenIfRegular() {
-        for id in ["com.apple.SecurityAgent", "com.apple.systempreferences"] {
-            Check.equal(FocusIntent.exemption(bundleID: id, isRegularApp: true, allowed: []), .systemPrompt)
+    /// GPG's passphrase prompt is a third-party agent with a password field.
+    static func testListedPromptsAreExemptEvenIfRegular() {
+        for id in ["com.apple.SecurityAgent", "com.apple.systempreferences", "org.gpgtools.pinentry-mac"] {
+            Check.equal(FocusIntent.exemption(bundleID: id, isRegularApp: true, allowed: []), .prompt)
+            Check.equal(FocusIntent.exemption(bundleID: id, isRegularApp: false, allowed: []), .prompt)
+        }
+    }
+
+    /// A VPN or sync client asking to sign in again keeps focus, agent or app.
+    static func testAFocusedPasswordFieldIsExempt() {
+        for (id, regular) in [("org.openvpn.client.app", false), ("com.microsoft.Outlook", true)] {
+            Check.equal(FocusIntent.exemption(bundleID: id, isRegularApp: regular, showsPasswordField: true, allowed: []), .passwordField)
+            Check.equal(FocusIntent.exemption(bundleID: id, isRegularApp: regular, showsPasswordField: false, allowed: []), nil)
         }
     }
 
@@ -258,10 +269,12 @@ enum FocusIntentTests {
         Check.equal(FocusIntent.exemption(bundleID: nil, isRegularApp: false, allowed: []), .systemAgent)
     }
 
-    /// Little Snitch's alerts and League's client helper come from `LSUIElement`
-    /// agents (`FocusIntentSpecs.md`). Neither is a prompt that takes typing.
+    /// Little Snitch's alerts and the helpers that bring League's client and
+    /// Microsoft AutoUpdate forward are `LSUIElement` agents (`FocusIntentSpecs.md`).
+    /// None is a prompt that takes typing.
     static func testThirdPartyAgentsAreGuarded() {
-        for agent in ["at.obdev.littlesnitch.agent", "com.riotgames.LeagueofLegends.LeagueClient"] {
+        for agent in ["at.obdev.littlesnitch.agent", "com.riotgames.LeagueofLegends.LeagueClient",
+                      "com.microsoft.autoupdate.fba"] {
             Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: []), nil)
             Check.equal(FocusIntent.exemption(bundleID: agent, isRegularApp: false, allowed: [agent]), .allowedByUser)
         }
@@ -281,7 +294,8 @@ enum FocusIntentTests {
     /// An allowed app in front is still guarded. A prompt in front is not, since
     /// a revert would send the rest of a password to the app behind it.
     static func testOnlyPromptsMayHoldTyping() {
-        Check.expect(FocusIntent.Exemption.systemPrompt.mayHoldTyping)
+        Check.expect(FocusIntent.Exemption.prompt.mayHoldTyping)
+        Check.expect(FocusIntent.Exemption.passwordField.mayHoldTyping)
         Check.expect(FocusIntent.Exemption.systemAgent.mayHoldTyping)
         Check.expect(!FocusIntent.Exemption.allowedByUser.mayHoldTyping)
     }
