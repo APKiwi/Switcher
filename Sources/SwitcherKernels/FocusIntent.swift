@@ -28,15 +28,21 @@ public enum FocusIntent {
         /// Command, Control or Option released. A hold-to-switch chord ends here,
         /// and its Tab presses are hotkeys no global monitor sees.
         case modifierRelease
-        /// The active Space changed, as a trackpad swipe does.
+        /// The active Space changed. This is an effect, never input by itself.
         case spaceChange
+        /// A gesture observed at the passive session tap. It may be a desktop
+        /// swipe or Mission Control, so it gets time for the animation to finish.
+        case gesture
+        /// Control plus an arrow navigates desktops or Mission Control. The
+        /// activation can arrive after the ordinary shortcut window expires.
+        case spaceNavigation
         /// Switcher's own panel and hotkeys, which no global monitor sees.
         case switcher
         /// Characters, Shift, arrows and the rest. Evidence the user is busy,
         /// never a reason for another app to come forward.
         case typing
 
-        public var canSwitchApps: Bool { self != .typing }
+        public var canSwitchApps: Bool { self != .typing && self != .spaceChange }
 
         /// Whether this input, arriving between a steal and its revert, should
         /// stand the revert down: it may be switching apps itself, or the user is
@@ -48,14 +54,11 @@ public enum FocusIntent {
         /// work. A click does not: a second click on a slow app's bouncing Dock
         /// icon is still waiting, and a click that picks another app ends the
         /// wait through `lastSwitchCause` anyway.
-        public var endsAWait: Bool { self != .click }
+        public var endsAWait: Bool { self != .click && self != .spaceChange }
 
-        /// How long after an activation this input may be stamped and still be
-        /// its cause. Events carry their own timestamps, but a Space change is
-        /// stamped when its notice arrives, and whether that notice lands before
-        /// or after the activation a swipe causes is not measured yet. Reverting a
-        /// swipe would swipe the user back, so it gets the whole decision delay.
-        public var stampLag: TimeInterval { self == .spaceChange ? FocusIntent.decisionDelay : 0 }
+        public var intentWindow: TimeInterval {
+            self == .gesture || self == .spaceNavigation ? 2 : FocusIntent.inputWindow
+        }
     }
 
     public struct Input: Equatable {
@@ -116,8 +119,8 @@ public enum FocusIntent {
                                 inputs: [Input], lastSwitchCause: Input? = nil) -> Verdict {
         let direct = inputs
             .filter {
-                $0.kind.canSwitchApps && $0.at <= activationAt + $0.kind.stampLag
-                    && activationAt - $0.at <= inputWindow
+                $0.kind.canSwitchApps && $0.at <= activationAt
+                    && activationAt - $0.at <= $0.kind.intentWindow
             }
             .max { $0.at < $1.at }
         if let direct { return .intended(by: direct) }
@@ -136,9 +139,11 @@ public enum FocusIntent {
     }
 
     /// Return (36) and keypad Enter (76) confirm. A Command, Control or Option
-    /// chord is a shortcut. Everything else is typing.
+    /// chord is a shortcut. Control plus an arrow also covers desktop animation.
+    /// Everything else is typing.
     public static func keyKind(keyCode: UInt16, modifiers: Modifiers) -> InputKind {
         if keyCode == 36 || keyCode == 76 { return .confirmKey }
+        if (123...126).contains(keyCode), modifiers == [.control] { return .spaceNavigation }
         return modifiers.isDisjoint(with: .switching) ? .typing : .shortcut
     }
 

@@ -22,12 +22,15 @@ enum FocusIntentTests {
         Check.run("testInputAfterTheActivationIsNotItsCause", testInputAfterTheActivationIsNotItsCause)
         Check.run("testInputWindowBoundary", testInputWindowBoundary)
         Check.run("testMostRecentCauseIsReported", testMostRecentCauseIsReported)
-        Check.run("testSpaceChangeBeforeTheActivationCounts", testSpaceChangeBeforeTheActivationCounts)
-        Check.run("testSpaceChangeNoticedJustAfterTheActivationCounts", testSpaceChangeNoticedJustAfterTheActivationCounts)
+        Check.run("testSpaceChangeAloneDoesNotJustifyActivation", testSpaceChangeAloneDoesNotJustifyActivation)
+        Check.run("testStealerCannotJustifyItselfWithALaterSpaceChange", testStealerCannotJustifyItselfWithALaterSpaceChange)
+        Check.run("testObservedGestureAllowsDesktopAnimation", testObservedGestureAllowsDesktopAnimation)
+        Check.run("testKeyboardDesktopSwitchSurvivesAnimation", testKeyboardDesktopSwitchSurvivesAnimation)
         Check.run("testSwitcherActionCounts", testSwitcherActionCounts)
         // C. Launches
         Check.run("testScriptedLaunchWithNoInputIsASteal", testScriptedLaunchWithNoInputIsASteal)
         Check.run("testSlowLaunchLandsWhenTheUserWaits", testSlowLaunchLandsWhenTheUserWaits)
+        Check.run("testLaunchSpaceChangeDoesNotCancelItsOwnWait", testLaunchSpaceChangeDoesNotCancelItsOwnWait)
         Check.run("testSlowLaunchIsAStealOnceTheUserMovedOn", testSlowLaunchIsAStealOnceTheUserMovedOn)
         Check.run("testInputWithinTheSlackKeepsTheLaunch", testInputWithinTheSlackKeepsTheLaunch)
         Check.run("testLaunchIntentExpires", testLaunchIntentExpires)
@@ -132,17 +135,31 @@ enum FocusIntentTests {
         Check.equal(classify(at: 10, [later, Input(.click, at: 9.7)]), .intended(by: later))
     }
 
-    static func testSpaceChangeBeforeTheActivationCounts() {
+    static func testSpaceChangeAloneDoesNotJustifyActivation() {
         let swipe = Input(.spaceChange, at: 9.9)
-        Check.equal(classify(at: 10, [swipe]), .intended(by: swipe))
+        Check.equal(classify(at: 10, [swipe]), .steal)
     }
 
-    /// Fails open until the notice order is measured: a swipe that reads as a
-    /// steal would be swiped back.
-    static func testSpaceChangeNoticedJustAfterTheActivationCounts() {
+    /// A programmatic activation can cause this same notification. It is an
+    /// effect of the steal, not evidence that the user asked for it.
+    static func testStealerCannotJustifyItselfWithALaterSpaceChange() {
         let swipe = Input(.spaceChange, at: 10.1)
-        Check.equal(classify(at: 10, [swipe]), .intended(by: swipe))
+        Check.equal(classify(at: 10, [swipe]), .steal)
         Check.equal(classify(at: 10, [Input(.spaceChange, at: 10 + FocusIntent.decisionDelay + 0.01)]), .steal)
+    }
+
+    static func testObservedGestureAllowsDesktopAnimation() {
+        let gesture = Input(.gesture, at: 10)
+        Check.equal(classify(at: 11.2, [gesture, Input(.spaceChange, at: 11.1)]), .intended(by: gesture))
+        Check.equal(classify(at: 15, [gesture, Input(.spaceChange, at: 14.9)]), .steal)
+        Check.equal(classify(at: 9.99, [gesture]), .steal)
+        Check.expect(FocusIntent.InputKind.gesture.cancelsRevert)
+    }
+
+    static func testKeyboardDesktopSwitchSurvivesAnimation() {
+        let controlRight = Input(FocusIntent.keyKind(keyCode: 124, modifiers: [.control]), at: 10)
+        Check.expect(!classify(at: 11.2, [controlRight, Input(.spaceChange, at: 11.1)]).isSteal)
+        Check.equal(classify(at: 15, [controlRight]), .steal)
     }
 
     /// A click on the panel goes to Switcher's own window and an H or Q is a
@@ -162,6 +179,12 @@ enum FocusIntentTests {
     static func testSlowLaunchLandsWhenTheUserWaits() {
         let returnKey = Input(.confirmKey, at: 0)
         Check.equal(classify(at: 20, launchedAt: 0.12, [returnKey]), .launched(by: returnKey))
+    }
+
+    static func testLaunchSpaceChangeDoesNotCancelItsOwnWait() {
+        let returnKey = Input(.confirmKey, at: 10)
+        Check.equal(classify(at: 12, launchedAt: 10.1,
+                             [returnKey, Input(.spaceChange, at: 11.9)]), .launched(by: returnKey))
     }
 
     /// Launched, then back to work elsewhere: the late activation is the classic
@@ -238,7 +261,7 @@ enum FocusIntentTests {
         Check.expect(FocusIntent.InputKind.switcher.cancelsRevert)
         Check.expect(!FocusIntent.InputKind.typing.cancelsRevert)
         Check.expect(!FocusIntent.InputKind.spaceChange.cancelsRevert)
-        Check.expect(FocusIntent.InputKind.spaceChange.canSwitchApps)
+        Check.expect(!FocusIntent.InputKind.spaceChange.canSwitchApps)
         Check.expect(!FocusIntent.InputKind.typing.canSwitchApps)
     }
 

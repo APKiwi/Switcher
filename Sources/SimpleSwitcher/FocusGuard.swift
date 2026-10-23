@@ -23,8 +23,9 @@ final class FocusGuard {
     /// `activate` brought the previous app back in every measured revert. The AX
     /// fallback stays in case a later macOS refuses activation from a timer.
     enum RevertMethod: String, CaseIterable {
+        case window = "WindowServer exact window"
         case activate = "NSRunningApplication.activate"
-        case axFrontmost = "AX kAXFrontmostAttribute"
+        case axRaise = "AX raise saved window"
     }
 
     /// Counts for the `--focus-probe` summary.
@@ -54,6 +55,9 @@ final class FocusGuard {
         let method: RevertMethod
         let startedAt: TimeInterval
         let triedMethods: [RevertMethod]
+        let ticket: FocusRestoration.Ticket
+        let window: FocusWindowContext.Snapshot?
+        let lease: RestoreLease
     }
 
     private let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -61,6 +65,20 @@ final class FocusGuard {
     private var lastFlags: FocusIntent.Modifiers = []
     /// Where focus belongs: the latest app brought forward on purpose.
     private var lastIntentional: NSRunningApplication?
+    private var lastWindow: FocusWindowContext.Snapshot?
+    private let windows = FocusWindowContext()
+    private let gestures = FocusGestureMonitor()
+    private var restoration = FocusRestoration()
+    private var browserHandoff = BrowserHandoff()
+    private var browsers = Set<String>()
+    private struct LinkInspection {
+        let app: NSRunningApplication
+        let point: CGPoint?
+        let cause: FocusIntent.Input
+    }
+    private var linkInspection = BrowserHandoff.Inspection<LinkInspection>()
+    private var linkWaiters: [UUID: (Bool) -> Void] = [:]
+    private var linkEpoch = 0
     /// The input behind the latest deliberate activation, which ends any older
     /// launch's claim to focus.
     private var lastSwitchCause: FocusIntent.Input?
@@ -97,7 +115,35 @@ final class FocusGuard {
         activations = ActivationQueue()
         lastIntentional = NSWorkspace.shared.frontmostApplication
         lastSwitchCause = nil
-        promptInFront = false
+        promptInFront = lastIntentional.map(isKnownPrompt) ?? false
+        lastWindow = nil
+        restoration = FocusRestoration()
+        browserHandoff = BrowserHandoff()
+        // Resolves handlers only. These URLs are never opened or fetched.
+        browsers = Set([URL(string: "http://example.invalid")!, URL(string: "https://example.invalid")!]
+            .flatMap { NSWorkspace.shared.urlsForApplications(toOpen: $0) }
+            .compactMap { Bundle(url: $0)?.bundleIdentifier })
+            .subtracting(["com.choosyosx.Choosy", Bundle.main.bundleIdentifier ?? ""])
+        windows.onChange = { [weak self] snapshot in
+            guard let self, self.isRunning,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid else { return }
+            let protected = snapshot.mayBePrompt || IsSecureEventInputEnabled()
+                || NSRunningApplication(processIdentifier: snapshot.pid).map(self.isKnownPrompt) == true
+            self.promptInFront = protected
+            if protected {
+                self.cancelRestore(reason: "prompt window appeared")
+                self.cancelBrowserHandoff()
+            }
+            if self.lastIntentional?.processIdentifier == snapshot.pid, self.inFlight == nil {
+                self.lastWindow = snapshot
+            }
+        }
+        if let app = lastIntentional { windows.watch(app.processIdentifier) }
+        gestures.onGesture = { [weak self] at in
+            guard let self, self.isRunning else { return }
+            self.record(.gesture, at: at)
+        }
+        gestures.start()
 
         let center = NSWorkspace.shared.notificationCenter
         observers = [
@@ -108,10 +154,19 @@ final class FocusGuard {
             },
             center.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
                                object: nil, queue: .main) { [weak self] _ in
-                self?.record(.spaceChange, at: ProcessInfo.processInfo.systemUptime)
-                self?.trace?("Space changed")
+                guard let self else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                self.record(.spaceChange, at: now)
+                if !self.gestures.isAvailable {
+                    // With no gesture observer, a swipe is indistinguishable
+                    // from a programmatic change. Leave the user in control.
+                    self.record(.gesture, at: now)
+                    self.cancelRestore(reason: "Space changed without gesture observation")
+                }
+                self.trace?("Space changed (gesture observer \(self.gestures.isAvailable ? "available" : "unavailable"))")
             },
         ]
+        trace?("gesture observer: \(gestures.isAvailable ? "available" : "unavailable, Space changes fail open")")
         trace?("guarding, starting app \(describe(lastIntentional))")
         onRunningChange?(true)
     }
@@ -125,7 +180,13 @@ final class FocusGuard {
         observers.removeAll()
         // Failing open: whatever is still being judged keeps its rank.
         keep(activations.flush())
-        inFlight = nil
+        cancelRestore(reason: "guard stopped")
+        windows.stop()
+        gestures.stop()
+        cancelBrowserHandoff()
+        linkInspection = BrowserHandoff.Inspection()
+        linkWaiters.removeAll()
+        lastWindow = nil
         inputs.removeAll()
         lastIntentional = nil
         lastSwitchCause = nil
@@ -142,15 +203,73 @@ final class FocusGuard {
     // MARK: - Input
 
     private func handle(_ event: NSEvent) {
+        let source = NSWorkspace.shared.frontmostApplication
         switch event.type {
         case .keyDown:
-            record(FocusIntent.keyKind(keyCode: event.keyCode, modifiers: Self.modifiers(event)), at: event.timestamp)
+            let kind = FocusIntent.keyKind(keyCode: event.keyCode, modifiers: Self.modifiers(event))
+            record(kind, at: event.timestamp)
+            if kind == .confirmKey, let source {
+                inspectLink(in: source, point: nil, cause: .init(kind, at: event.timestamp))
+            }
         case .flagsChanged:
             let current = Self.modifiers(event)
             record(FocusIntent.flagsKind(from: lastFlags, to: current), at: event.timestamp)
             lastFlags = current
         default:
             record(.click, at: event.timestamp)
+            if event.type == .leftMouseDown, let source {
+                inspectLink(in: source, point: event.cgEvent?.location,
+                            cause: .init(.click, at: event.timestamp))
+            }
+        }
+    }
+
+    private func inspectLink(in app: NSRunningApplication, point: CGPoint?, cause: FocusIntent.Input) {
+        guard !browsers.isEmpty else { return }
+        let request = LinkInspection(app: app, point: point, cause: cause)
+        guard linkInspection.begin(request) else { return }
+        runLinkInspection(request)
+    }
+
+    private func runLinkInspection(_ request: LinkInspection) {
+        let (app, point, cause) = (request.app, request.point, request.cause)
+        let session = self.session
+        let epoch = linkEpoch
+        windows.inspectLink(in: app.processIdentifier, at: point) { [weak self] isLink in
+            guard let self, self.isRunning, self.session == session else { return }
+            if let pending = self.linkInspection.finish() {
+                self.runLinkInspection(pending)
+                return
+            }
+            if isLink, self.linkEpoch == epoch {
+                self.browserHandoff.recordLink(cause, destinations: self.browsers)
+                self.trace?("link action in \(self.describe(app)), browser handoff armed")
+            }
+            let waiters = Array(self.linkWaiters.values)
+            self.linkWaiters.removeAll()
+            waiters.forEach { $0(true) }
+        }
+    }
+
+    private func cancelBrowserHandoff() {
+        linkEpoch += 1
+        linkInspection.cancelPending()
+        browserHandoff.cancel()
+    }
+
+    /// The pending link query may be behind a window query on the AX queue.
+    /// A browser decision must wait for the complete coalesced input chain,
+    /// not merely whichever AX operation happened to be enqueued first.
+    private func afterLinkEvidence(for app: NSRunningApplication, completion: @escaping (Bool) -> Void) {
+        guard let id = app.bundleIdentifier, browsers.contains(id), linkInspection.isBusy else {
+            completion(true)
+            return
+        }
+        let request = UUID()
+        linkWaiters[request] = completion
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let completion = self?.linkWaiters.removeValue(forKey: request) else { return }
+            completion(false)
         }
     }
 
@@ -165,6 +284,15 @@ final class FocusGuard {
     }
 
     private func record(_ kind: FocusIntent.InputKind, at timestamp: TimeInterval) {
+        if kind == .gesture, let previous = inputs.last, previous.kind == .gesture,
+           timestamp - previous.at < 0.05 { return }
+        if kind.cancelsRevert, let flight = inFlight {
+            cancelRestore(reason: "new \(kind) input")
+            acceptSteal(cancelledBy: .init(kind, at: timestamp), after: "revert call", at: flight.startedAt)
+            if let front = NSWorkspace.shared.frontmostApplication {
+                keep(activations.notice(front, kept: true).released)
+            }
+        }
         let name = "\(kind)"
         if tally.inputs[name] == nil { trace?("first \(name) seen") }
         tally.inputs[name, default: 0] += 1
@@ -182,20 +310,37 @@ final class FocusGuard {
 
     /// Input after a steal that may switch apps means the user is acting on it:
     /// whatever is in front now is where focus belongs.
-    private func acceptSteal(cancelledBy cause: FocusIntent.Input, after event: String, at time: TimeInterval) {
+    private func acceptSteal(cancelledBy cause: FocusIntent.Input, after event: String, at time: TimeInterval,
+                             snapshot: FocusWindowContext.Snapshot? = nil) {
         let front = NSWorkspace.shared.frontmostApplication
-        if let front, front.processIdentifier != ownPID { lastIntentional = front }
+        if let front, front.processIdentifier != ownPID {
+            remember(front)
+            if let snapshot, snapshot.pid == front.processIdentifier { lastWindow = snapshot }
+        }
         lastSwitchCause = cause
         trace?("  revert cancelled by \(cause.kind) \(ms(cause.at - time)) after the \(event), keeping \(describe(front))")
+    }
+
+    private func remember(_ app: NSRunningApplication) {
+        lastIntentional = app
+        lastWindow = windows.current?.pid == app.processIdentifier ? windows.current : nil
+        windows.watch(app.processIdentifier)
     }
 
     // MARK: - Activation
 
     private func appDidActivate(_ app: NSRunningApplication) {
         let activationAt = ProcessInfo.processInfo.systemUptime
+        let leavingPrompt = promptInFront
+        let protected = isKnownPrompt(app) || IsSecureEventInputEnabled()
+        restoration.activated(app.processIdentifier, protected: protected)
+        if restoration.pending == nil { cancelRestore(reason: "new activation or prompt") }
+        promptInFront = protected
+        if protected { cancelBrowserHandoff() }
+        windows.watch(app.processIdentifier)
         if let flight = inFlight, flight.target.processIdentifier == app.processIdentifier {
-            trace?("revert landed on \(describe(app)) \(ms(activationAt - flight.startedAt)) after \(flight.method.rawValue)")
-            revertLanded(flight)
+            trace?("restore target activated, checking saved window")
+            verifyLanding(flight)
             return
         }
 
@@ -217,15 +362,31 @@ final class FocusGuard {
         let launchedAt = app.launchDate.map { activationAt - Date().timeIntervalSince($0) }
         // A cause already seen stays one however much input arrives late, so a
         // panel pick ranks at once instead of after the decision delay.
-        let intendedNow = !FocusIntent.classify(activationAt: activationAt, launchedAt: nil,
-                                                inputs: inputs, lastSwitchCause: lastSwitchCause).isSteal
+        let immediate = FocusIntent.classify(activationAt: activationAt, launchedAt: nil,
+                                             inputs: inputs, lastSwitchCause: lastSwitchCause)
+        let intendedNow = !immediate.isSteal
+        if case .intended(let cause) = immediate {
+            remember(app)
+            lastSwitchCause = cause
+        }
         let noticed = activations.notice(app, kept: intendedNow ? true : nil)
         keep(noticed.released)
         let session = self.session
         DispatchQueue.main.asyncAfter(deadline: .now() + FocusIntent.decisionDelay) { [weak self] in
             guard let self, self.isRunning, self.session == session else { return }
-            let kept = self.decide(app, activationAt: activationAt, launchedAt: launchedAt)
-            self.keep(self.activations.settle(noticed.id, kept: kept))
+            self.afterLinkEvidence(for: app) { [weak self] evidenceReady in
+                guard let self, self.isRunning, self.session == session else { return }
+                guard evidenceReady else {
+                    self.trace?("allowed: \(self.describe(app)), link inspection timed out")
+                    self.keep(self.activations.settle(noticed.id, kept: true))
+                    return
+                }
+                self.windows.inspect(app.processIdentifier) { [weak self] snapshot in
+                    guard let self, self.isRunning, self.session == session else { return }
+                    let kept = self.decide(app, activationAt: activationAt, launchedAt: launchedAt, snapshot: snapshot, leavingPrompt: leavingPrompt)
+                    self.keep(self.activations.settle(noticed.id, kept: kept))
+                }
+            }
         }
     }
 
@@ -234,31 +395,49 @@ final class FocusGuard {
     }
 
     /// Returns whether the app keeps focus, and so its rank.
-    private func decide(_ app: NSRunningApplication, activationAt: TimeInterval, launchedAt: TimeInterval?) -> Bool {
+    private func decide(_ app: NSRunningApplication, activationAt: TimeInterval, launchedAt: TimeInterval?,
+                        snapshot: FocusWindowContext.Snapshot, leavingPrompt: Bool) -> Bool {
         let verdict = FocusIntent.classify(activationAt: activationAt, launchedAt: launchedAt,
                                            inputs: inputs, lastSwitchCause: lastSwitchCause)
-        // Read only at the decision: at the notice the app losing focus may still
-        // hold secure input, and an unasked prompt cannot have taken any of a
-        // password in the 150 ms before it.
-        let showsPasswordField = verdict.isSteal && Self.showsPasswordField(app)
+        // Historical decisions may settle their MRU position, but never replace
+        // the current restore target or prompt state after a newer activation.
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
+            return !verdict.isSteal || isKnownPrompt(app)
+        }
+        let showsPasswordField = Self.showsPasswordField(app) || snapshot.mayBePrompt
         let exemption = FocusIntent.exemption(bundleID: app.bundleIdentifier,
                                               isRegularApp: app.activationPolicy == .regular,
                                               showsPasswordField: showsPasswordField,
                                               allowed: Preferences.focusGuardAllowedApps)
-        let leavingPrompt = promptInFront
         promptInFront = exemption?.mayHoldTyping ?? false
+        if promptInFront {
+            cancelRestore(reason: "protected activation")
+            cancelBrowserHandoff()
+        }
+        let handoff = browserHandoff.consume(bundleID: app.bundleIdentifier, at: activationAt,
+                                              inputs: inputs, lastSwitchCause: lastSwitchCause)
+        if let handoff {
+            lastIntentional = app
+            lastWindow = snapshot
+            lastSwitchCause = handoff
+            tally.intended += 1
+            trace?("intended browser handoff: \(describe(app)), link action \(ms(activationAt - handoff.at)) before")
+            return true
+        }
         let launchNote = launchedAt.flatMap { activationAt - $0 < 15 ? ", launched \(ms(activationAt - $0)) before" : nil } ?? ""
 
         switch verdict {
         case .intended(let cause):
             tally.intended += 1
             lastIntentional = app
+            lastWindow = snapshot
             lastSwitchCause = cause
             trace?("intended: \(describe(app)), \(cause.kind) \(ms(activationAt - cause.at)) before\(launchNote)")
             return true
         case .launched(let cause):
             tally.launched += 1
             lastIntentional = app
+            lastWindow = snapshot
             lastSwitchCause = cause
             trace?("launched: \(describe(app)), \(cause.kind) \(ms(activationAt - cause.at)) before\(launchNote)")
             return true
@@ -271,15 +450,22 @@ final class FocusGuard {
             if leavingPrompt {
                 tally.allowed += 1
                 lastIntentional = app
+                lastWindow = snapshot
                 trace?("allowed: \(describe(app)), it took focus from a prompt\(launchNote)")
                 return true
             }
-            return handleSteal(app, activationAt: activationAt, launchNote: launchNote)
+            if snapshot.inspectionFailed {
+                trace?("allowed: \(describe(app)), Accessibility inspection unavailable")
+                cancelRestore(reason: "prompt inspection unavailable")
+                return true
+            }
+            return handleSteal(app, activationAt: activationAt, launchNote: launchNote, snapshot: snapshot)
         }
     }
 
     /// Returns whether the stealer keeps focus.
-    private func handleSteal(_ app: NSRunningApplication, activationAt: TimeInterval, launchNote: String) -> Bool {
+    private func handleSteal(_ app: NSRunningApplication, activationAt: TimeInterval, launchNote: String,
+                             snapshot: FocusWindowContext.Snapshot) -> Bool {
         tally.steals += 1
         if trace != nil {
             let before = inputs.filter { $0.at <= activationAt }
@@ -293,14 +479,14 @@ final class FocusGuard {
         guard let target = lastIntentional, !target.isTerminated, !target.isHidden,
               target.processIdentifier != app.processIdentifier else {
             trace?("  nothing to revert to")
-            lastIntentional = app
+            remember(app)
             return true
         }
 
         // Input between the activation and this decision may be switching apps
         // itself, so a revert now would fight it.
         if let cancel = firstCancel(after: activationAt) {
-            acceptSteal(cancelledBy: cancel, after: "steal", at: activationAt)
+            acceptSteal(cancelledBy: cancel, after: "steal", at: activationAt, snapshot: snapshot)
             return true
         }
 
@@ -312,76 +498,123 @@ final class FocusGuard {
             return false
         }
         trace?("  reverting to \(describe(target)) \(ms(ProcessInfo.processInfo.systemUptime - activationAt)) after the steal")
-        attemptRevert(stealer: app, to: target, with: .activate, tried: [])
-        return false
+        return !attemptRevert(stealer: app, to: target, with: lastWindow?.windowID == nil ? .activate : .window, tried: [])
     }
 
     // MARK: - Revert
 
-    private func attemptRevert(stealer: NSRunningApplication, to target: NSRunningApplication,
-                               with method: RevertMethod, tried: [RevertMethod]) {
-        let flight = InFlightRevert(
-            stealer: stealer, target: target, method: method,
-            startedAt: ProcessInfo.processInfo.systemUptime,
-            triedMethods: tried + [method])
-        inFlight = flight
+    private func cancelRestore(reason: String) {
+        if let flight = inFlight {
+            flight.lease.cancel()
+            trace?("  restore cancelled: \(reason)")
+        }
+        inFlight = nil
+        restoration.cancel()
+    }
 
-        switch method {
-        case .activate:
-            let accepted = target.activate(options: [.activateIgnoringOtherApps])
-            trace?("  \(method.rawValue) returned \(accepted)")
-        case .axFrontmost:
-            let pid = target.processIdentifier
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let element = AXUIElementCreateApplication(pid)
-                AXUIElementSetMessagingTimeout(element, 1.0)
-                let error = AXUIElementSetAttributeValue(element, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-                DispatchQueue.main.async { self?.trace?("  \(method.rawValue) returned AXError \(error.rawValue)") }
-            }
+    private func isKnownPrompt(_ app: NSRunningApplication) -> Bool {
+        FocusIntent.exemption(bundleID: app.bundleIdentifier, isRegularApp: app.activationPolicy == .regular,
+                              allowed: [])?.mayHoldTyping == true
+    }
+
+    @discardableResult
+    private func attemptRevert(stealer: NSRunningApplication, to target: NSRunningApplication,
+                               with method: RevertMethod, tried: [RevertMethod]) -> Bool {
+        cancelRestore(reason: "superseded restore")
+        let saved = lastWindow?.pid == target.processIdentifier ? lastWindow : nil
+        if let windowID = saved?.windowID, !FocusWindowAPI.exists(windowID, for: target.processIdentifier) {
+            trace?("  saved window no longer exists, leaving focus alone")
+            return false
+        }
+        let ticket = restoration.begin(stealer: stealer.processIdentifier, target: target.processIdentifier,
+                                       window: saved?.windowID)
+        let flight = InFlightRevert(stealer: stealer, target: target, method: method,
+                                   startedAt: ProcessInfo.processInfo.systemUptime, triedMethods: tried + [method],
+                                   ticket: ticket, window: saved, lease: RestoreLease())
+        inFlight = flight
+        let protected = promptInFront || IsSecureEventInputEnabled() || FocusWindowAPI.hasVisiblePrompt()
+        guard restoration.canRestore(ticket, frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                                     protected: protected), !target.isTerminated, !target.isHidden else {
+            cancelRestore(reason: "prompt or foreground changed before restore")
+            return false
         }
 
+        switch method {
+        case .window:
+            let accepted = saved?.windowID.map { FocusWindowAPI.activate(pid: target.processIdentifier, window: $0) } ?? false
+            trace?("  exact window \(saved?.windowID ?? 0) activation accepted: \(accepted)")
+        case .activate:
+            let accepted = target.activate(options: [.activateIgnoringOtherApps])
+            trace?("  app activation accepted: \(accepted)")
+        case .axRaise:
+            guard let window = saved?.window else { cancelRestore(reason: "saved window unavailable"); return false }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                // Read the cancellation lease and live foreground immediately
+                // before the IPC, never from mutable main-thread guard state.
+                let front = NSWorkspace.shared.frontmostApplication
+                guard flight.lease.isValid, !IsSecureEventInputEnabled(), !FocusWindowAPI.hasVisiblePrompt(),
+                      front?.processIdentifier == target.processIdentifier else { return }
+                AXUIElementSetMessagingTimeout(window, 0.1)
+                guard flight.lease.isValid else { return }
+                let error = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                DispatchQueue.main.async { self?.trace?("  AX raise returned \(error.rawValue)") }
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.revertCheckDelay) { [weak self] in
             self?.checkRevert(flight)
         }
+        return true
     }
 
-    private func revertLanded(_ flight: InFlightRevert) {
-        inFlight = nil
-        tally.reverts[flight.method, default: (ok: 0, failed: 0)].ok += 1
-        lastIntentional = flight.target
-        promptInFront = false
-        keep(activations.notice(flight.target, kept: true).released)
+    private func verifyLanding(_ flight: InFlightRevert, completion: ((Bool) -> Void)? = nil) {
+        windows.inspect(flight.target.processIdentifier) { [weak self] snapshot in
+            guard let self, self.isRunning, self.inFlight?.ticket == flight.ticket else { return }
+            let landed = self.restoration.landed(flight.ticket,
+                frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                window: snapshot.windowID,
+                onScreen: snapshot.windowID.map(FocusWindowAPI.isOnScreen) ?? false)
+            if landed {
+                self.trace?("  restore verified (\(flight.ticket.window == nil ? "app only" : "exact window")): \(self.describe(flight.target)), window \(snapshot.windowID ?? 0)")
+                self.inFlight = nil
+                flight.lease.cancel()
+                self.restoration.cancel()
+                self.tally.reverts[flight.method, default: (ok: 0, failed: 0)].ok += 1
+                self.lastIntentional = flight.target
+                self.lastWindow = snapshot
+                self.promptInFront = snapshot.mayBePrompt || Self.showsPasswordField(flight.target)
+                self.keep(self.activations.notice(flight.target, kept: true).released)
+            }
+            completion?(landed)
+        }
     }
 
-    /// Only a flight whose landing was not seen gets here.
     private func checkRevert(_ flight: InFlightRevert) {
-        guard isRunning, inFlight?.startedAt == flight.startedAt else { return }
-        let front = NSWorkspace.shared.frontmostApplication
-        if front?.processIdentifier == flight.target.processIdentifier {
-            trace?("  \(flight.method.rawValue): OK, frontmost after \(ms(Self.revertCheckDelay)) is \(describe(front))")
-            revertLanded(flight)
-            return
+        guard isRunning, inFlight?.ticket == flight.ticket else { return }
+        verifyLanding(flight) { [weak self] landed in
+            guard let self, !landed, self.inFlight?.ticket == flight.ticket else { return }
+            self.tally.reverts[flight.method, default: (ok: 0, failed: 0)].failed += 1
+            let front = NSWorkspace.shared.frontmostApplication
+            let protected = self.promptInFront || IsSecureEventInputEnabled() || FocusWindowAPI.hasVisiblePrompt()
+            guard self.restoration.canRestore(flight.ticket, frontmost: front?.processIdentifier, protected: protected) else {
+                self.cancelRestore(reason: "foreground or protection changed during restore")
+                return
+            }
+            if let cancel = self.firstCancel(after: flight.startedAt) {
+                self.cancelRestore(reason: "new input during restore")
+                self.acceptSteal(cancelledBy: cancel, after: "revert call", at: flight.startedAt)
+                return
+            }
+            guard let fallback = RevertMethod.allCases.first(where: {
+                !flight.triedMethods.contains($0) && ($0 != .window || flight.window?.windowID != nil)
+                    && ($0 != .axRaise || flight.window?.window != nil)
+            }) else {
+                self.trace?("  restore unverified, giving up with \(self.describe(front)) in front")
+                self.cancelRestore(reason: "restore methods exhausted")
+                if let front { self.keep(self.activations.notice(front, kept: true).released) }
+                return
+            }
+            self.attemptRevert(stealer: flight.stealer, to: flight.target, with: fallback, tried: flight.triedMethods)
         }
-        inFlight = nil
-        tally.reverts[flight.method, default: (ok: 0, failed: 0)].failed += 1
-        trace?("  \(flight.method.rawValue): FAILED, frontmost after \(ms(Self.revertCheckDelay)) is \(describe(front))")
-
-        // Input since the call that may switch apps is the user taking over:
-        // whatever is in front now is theirs to keep. A stealer still in front
-        // ranks after all, as it does when every method has failed.
-        let stealerHolds = front?.processIdentifier == flight.stealer.processIdentifier
-        if let cancel = firstCancel(after: flight.startedAt) {
-            acceptSteal(cancelledBy: cancel, after: "revert call", at: flight.startedAt)
-            if stealerHolds { keep(activations.notice(flight.stealer, kept: true).released) }
-            return
-        }
-        guard stealerHolds else { return }
-        guard let fallback = RevertMethod.allCases.first(where: { !flight.triedMethods.contains($0) }) else {
-            trace?("  giving up, \(describe(front)) keeps focus")
-            keep(activations.notice(flight.stealer, kept: true).released)
-            return
-        }
-        attemptRevert(stealer: flight.stealer, to: flight.target, with: fallback, tried: flight.triedMethods)
     }
 
     /// Secure keyboard entry is on while a focused password field is in front.
@@ -397,10 +630,27 @@ final class FocusGuard {
 
     private func describe(_ app: NSRunningApplication?) -> String {
         guard let app else { return "none" }
-        return "\(app.localizedName ?? app.bundleIdentifier ?? "?") (\(app.processIdentifier))"
+        return "\(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "no bundle id")] (\(app.processIdentifier))"
     }
 
     private func ms(_ seconds: TimeInterval) -> String {
         "\(Int((seconds * 1000).rounded()))ms"
+    }
+}
+
+/// The AX worker may still be queued when a prompt appears or the guard stops.
+/// Main-thread invalidation reaches it without touching unsynchronized state.
+private final class RestoreLease {
+    private let lock = NSLock()
+    private var valid = true
+    var isValid: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return valid
+    }
+    func cancel() {
+        lock.lock()
+        valid = false
+        lock.unlock()
     }
 }

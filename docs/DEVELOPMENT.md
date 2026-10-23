@@ -14,6 +14,9 @@ swift run --disable-sandbox SwitcherKernelsTests
 returns nonzero. Do not use `swift test` as proof on a machine with only Command Line Tools. That command can
 build a bundle it cannot execute and still return success.
 
+For a focused regression run, set `SWITCHER_TEST_FILTER` to a regular expression matching check names.
+The runner fails if no checks match. Finish with the unfiltered command above.
+
 Pure logic belongs in `SwitcherKernels`. Measured window behavior follows the implementation, evidence, and
 tests triad used by `WindowFilter` and `MinimizedState`. Keep the scenario lists and executable checks aligned.
 
@@ -42,7 +45,9 @@ the user unless the task explicitly requests a launch.
 `--focus-probe` runs the focus guard for two minutes from a bundle and prints every decision. It registers no
 hotkeys and leaves native Cmd+Tab alone, so it runs beside an installed Switcher. Turn the installed guard off
 first, or both revert. It needs the bundle's Accessibility grant, so build it with the stable signing identity.
-Re-run it after a major macOS update and record the results in `FocusIntentSpecs.md`. It is a live check, so it
+Re-run it after a major macOS update and record the results in `FocusIntentSpecs.md`. The checklist there
+covers cross-desktop League activations, `sfltool` authentication and automatic Choosy routing.
+Window ids and decision reasons are logged, but key text, URLs, window titles and field values are not. It is a live check, so it
 is a human handoff:
 
 ```bash

@@ -103,29 +103,47 @@ so the panel cannot refill behind the user's actions. An expanded session remain
 `FocusGuard` is off by default (`focusGuardEnabled`) and runs only once Accessibility is confirmed. Without it
 the key monitor is blind, so a launch's Return would go unseen and the launch would be reverted.
 
-Global and local `NSEvent` monitors feed input to `FocusIntent`, which judges each activation 150 ms after its
-notice by event timestamps. Only input that can switch apps counts: clicks, Return or Enter, Command, Control or
-Option chords and releases, Space changes, and Switcher's own panel actions. `AppDelegate` records those with
-`noteSwitcherAction()`, because the panel's Carbon hotkeys reach no monitor. A launch is judged from when it
-started and keeps its intent while the user waits for it, including through another click on its Dock icon.
-Typing or a shortcut after the launch ends that claim, and so does a deliberate switch to another app, unless
-the switch had the launch's own cause, as when a launcher hands focus back on its Return.
+Global and local `NSEvent` monitors feed input to `FocusIntent`, which waits at least 150 ms for late
+input before judging an activation. Clicks, Return or Enter, modifier shortcuts and releases, and Switcher's
+panel actions count as input. A separate passive `FocusGestureMonitor` observes gesture envelopes at the
+session tap, including desktop swipes. Gestures and Control+arrow desktop navigation have two seconds for their animation to finish. A Space-change
+notification alone never proves intent, since an app taking focus can cause it. If the gesture tap is unavailable,
+Space changes fail open. No event is swallowed or synthesized.
 
-A steal is sent back as soon as it is judged: `NSRunningApplication.activate` brings back the latest app brought
-forward on purpose, with an AX fallback. A click, confirm key, shortcut, modifier release or panel action between
-the steal and its judgement cancels the revert, since it may be switching apps itself, and a later steal goes back
-to the app the user kept. While the guard runs, `AppListProvider` ranks an activation only once `FocusGuard`
-judges it as keeping focus, in the order activations happened (`ActivationQueue`). A steal sent back never ranks,
-so a quick Cmd+Tab still reaches the previous app. An activation whose cause is already seen, such as a panel
-pick, ranks at once unless an older one is still being judged.
+A launch is judged from when it started and keeps its intent while the user waits for it, including through
+another click on its Dock icon. Typing or a shortcut after the launch ends that claim, as does a deliberate
+switch to another app unless the switch had the launch's own cause, such as a launcher handing focus back.
 
-The guard fails open. macOS's agents (`com.apple.*` with no Dock icon, or no bundle id), the listed prompts
-(Apple's and GPG's pinentry-mac), any app that takes focus while secure keyboard entry is on, as a focused
-password field turns it on, System Settings and the user's `focusGuardAllowedApps` keep focus. So does any app
-that takes focus from in front of one of these, except an allowed app: a revert would send the rest of a password to
-the app behind it. Third-party agents, such as Little Snitch's alerts and the helpers that bring League of
-Legends' client and Microsoft AutoUpdate forward, are guarded like apps. Counting them as prompts let a helper
-switch the guard off for the window it opened. Evidence and open questions are in `FocusIntentSpecs.md`.
+`FocusWindowContext` watches the active app's Accessibility window and focused-element notifications. It reads
+window identity, roles and modal state off the main thread with a messaging timeout. The latest intentional
+window is kept separately from the app currently being judged. Restoration first uses the optional WindowServer
+entry point `_SLPSSetFrontProcessWithOptions` with that saved window id, followed by app activation and a guarded
+AX raise if needed. Missing symbols retain the app fallback. A saved window counts as restored only when its app
+is frontmost, it is the focused window, and it is on screen. An app-only fallback is not evidence of exact-window
+or desktop restoration. These private calls require the existing SkyLight link.
+
+`FocusRestoration` gives each attempt a ticket. New switching input, an unrelated activation, a prompt or a stop
+invalidates it. An AX worker also checks a synchronized cancellation lease and live protection immediately before
+its write. A historical activation can settle its MRU position but cannot replace current prompt or window state.
+While the guard runs, `AppListProvider` ranks activations only after the guard judges them, in activation order
+through `ActivationQueue`. A successful restore does not promote the stealer.
+
+A link action can reach a browser after Choosy routes it automatically without showing a picker. Clicks and
+Return on an Accessibility link arm `BrowserHandoff` for the registered HTTP/HTTPS browsers. The allowance is
+single-use, expires after ten seconds, and ends on intervening work or another deliberate switch. Browser
+decisions wait for pending link inspection to finish. If it cannot finish within one extra second, the decision
+fails open instead of treating missing evidence as a steal. Neither a
+Choosy activation nor a browser's mere existence is sufficient. Only the link role and URL scheme are inspected.
+No URL, window title, field value or key text is logged. If a source app exposes no link evidence, the ordinary
+input and launch rules still apply.
+
+The guard fails open. macOS agents, listed authentication prompts, secure keyboard entry and modal/system
+dialogs keep focus. Prompt state is checked even for intentional activations and refreshed as a password field
+or dialog appears. Visible windows belonging to listed prompt agents also block restoration, covering dialogs
+that appear before their activation notice or remain visible after losing focus. A prompt or newer activation
+invalidates pending work immediately. Apps taking focus from a prompt remain exempt to avoid redirecting password
+input. Third-party agents without these protections remain guarded. Evidence, source references and live checks
+still required are recorded in `FocusIntentSpecs.md`.
 
 ## Panel and preferences
 

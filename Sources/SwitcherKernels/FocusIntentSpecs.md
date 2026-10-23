@@ -30,7 +30,7 @@ Three causes, one rule change each:
 2. The input behind an activation can reach the monitor after the activation notice. Decide `decisionDelay` later
    with event timestamps.
 3. Typing is not a reason for another app to come forward. Only clicks, Return or Enter, Command, Control or
-   Option chords and releases, and Space changes count.
+   Option chords and releases, and observed gestures count. Space-change notifications alone do not count.
 
 ## Second run, with these rules
 
@@ -78,17 +78,72 @@ in front, and a leaked secure input lets every steal through while it lasts.
 
 ## Not yet measured
 
-- Whether a trackpad Space swipe's `activeSpaceDidChange` notice arrives before or after the activation it causes.
-  Until it is measured, a Space change noticed up to `decisionDelay` after an activation counts as its cause. A
-  swipe is never swiped back, and a steal from another Space is let through.
+- Whether desktop gesture envelopes reach the passive tap on each supported macOS version. The earlier rule
+  that accepted a Space-change notice as intent let a cross-Space steal justify itself. Gesture timestamps now
+  provide the input evidence. A refused or disabled gesture tap retains the fail-open Space behavior.
 - Launches slower than a few seconds, with and without the user moving on.
 - Live admin prompts (`sfltool` background item prompts). The exemption rests on the `Info.plist` evidence above,
   not on a prompt seen by the probe.
 - Whether secure input is already on 150 ms after a prompt takes focus with its password field focused, for
-  pinentry-mac, OpenVPN Connect and OneDrive's sign-in. A prompt that focuses its field later is reverted.
+  pinentry-mac, OpenVPN Connect and OneDrive's sign-in. AX modal state and focused-element notifications now
+  supplement secure input. The real timing still needs a live check.
 - Whether a reverted Little Snitch connection or changed-binary alert stays on screen. A panel that hides when its
   app deactivates would vanish, and the user would have to allow the agent.
 - How often League of Legends' client and game activate in a row, and whether any app takes focus straight back
   after a revert. A revert is now called 150 ms after a steal instead of one second, so it should land about 175 ms after it.
 
 Re-run the probe after a major macOS update.
+
+## Focus handoff corrections
+
+The owner reported cross-Space League activations, hidden `sfltool` installation password prompts, and
+Choosy automatic browser routing being reverted. These reports identify the affected flows but are not a
+recorded probe run. No live desktop switch or authentication prompt was triggered by the implementation session.
+
+Source inspection found that raw Space notices counted as input, restore success tested only the app PID,
+password-field checks were skipped for intentional activations, and pending AX restore work could outlive its
+activation. The executable checks now pin these rules:
+
+- A Space notice before or after an activation cannot authorize it. An observed gesture or Control+arrow
+  navigation can cover its animation.
+- A browser handoff requires link evidence and a registered browser destination. It is consumed once, expires,
+  rejects stale/out-of-order evidence, and ends when the user moves on. League cannot consume it.
+- New input, a prompt, a different activation or a newer restore invalidates old restore tickets.
+- The right app with a different window, an off-screen window or an unknown window is not an exact-window success.
+
+The runtime reads AX link roles, focused window ids, secure-field subroles and modal state. It also checks visible
+windows owned by the listed prompt agents before each restore. It never reads password values or logs key text,
+window titles or URLs. Failure to inspect the activating app because it is unresponsive leaves focus alone.
+
+Symbol lookup on this machine confirmed `_AXUIElementGetWindow`, `_SLPSSetFrontProcessWithOptions` and
+`GetProcessForPID` are present. None was invoked during that check.
+
+Implementation references, not live behavior measurements on this machine:
+
+- [Apple's Space notification](https://developer.apple.com/documentation/appkit/nsworkspace/activespacedidchangenotification)
+  reports a change without a cause dictionary.
+- [Apple's AX hit testing](https://developer.apple.com/documentation/applicationservices/1462077-axuielementcopyelementatposition)
+  supplies the control at a click, and the focused control covers Return on a link.
+- [yabai's exact-window focus](https://github.com/koekeishiya/yabai/blob/v6.0.0/src/window_manager.c)
+  uses `_SLPSSetFrontProcessWithOptions` with a window id and AX raise. Switcher resolves the optional symbols
+  dynamically and verifies the focused id and visibility instead of trusting the call's return value.
+- [Dock gesture envelopes](https://github.com/oomol-lab/dockswipe/blob/main/dockswipe.m) use session event types
+  29 and 30. macOS 27 changed their payload. Switcher observes only the envelopes, never their private payload.
+  Other gestures can therefore grant the same short grace period. This deliberately fails open.
+
+Required live checks with the installed guard off and `--focus-probe` running:
+
+1. Leave League on another desktop and work in a particular window of an app with windows on several desktops.
+   A steal should return to that window and log a verified window id. Deliberate keyboard and trackpad desktop
+   changes must stay put. A missing or closed saved window must not be reported as an exact-window success.
+2. Show the `sfltool` installation password prompt during and just after a suspected steal. Keep the prompt
+   visible long enough to exercise delayed callbacks. No restore should cover it. Cancel instead of submitting
+   if installation is not intended. Do not include a password in a log or report.
+3. Click a link routed automatically through Choosy with the destination browser already running, then with a
+   cold browser. The reported source is an Outlook message linking to Azure DevOps. Expect `link action`
+   followed by `intended browser handoff`, with no Choosy picker required.
+   A source that does not expose AXLink cannot provide this extra evidence. Note the source app if that happens.
+4. Click or switch elsewhere while a browser request or restore is pending. The newer choice must win.
+
+The probe logs verified restores, cancellation reasons, link-evidence detection and gesture observer availability.
+Passing kernel checks and builds cannot substitute for these live checks.

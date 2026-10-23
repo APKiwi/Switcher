@@ -10,6 +10,7 @@ ShiftTapResolverTests.runAll()
 GridNavigationTests.runAll()
 RecentAppsTests.runAll()
 FocusIntentTests.runAll()
+FocusHandoffTests.runAll()
 ActivationQueueTests.runAll()
 
 exit(Check.summarize())

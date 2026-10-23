@@ -20,6 +20,8 @@ enum Check {
     private(set) static var currentTest = "<none>"
 
     static func run(_ name: String, _ body: () -> Void) {
+        if let filter = ProcessInfo.processInfo.environment["SWITCHER_TEST_FILTER"],
+           name.range(of: filter, options: .regularExpression) == nil { return }
         currentTest = name
         body()
     }
@@ -50,6 +52,10 @@ enum Check {
 
     /// Prints the summary and returns the process exit code.
     static func summarize() -> Int32 {
+        guard checks > 0 else {
+            print("No checks ran. Check SWITCHER_TEST_FILTER.")
+            return 1
+        }
         if failures.isEmpty {
             print("✓ \(checks) checks passed")
             return 0
