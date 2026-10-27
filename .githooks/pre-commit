@@ -1,3 +1,6 @@
 #!/bin/sh
 set -eu
 sh Scripts/check-agent-instructions.sh
+
+# Keep superpowers scratch untracked and unreferenced.
+sh Scripts/check-scratch.sh

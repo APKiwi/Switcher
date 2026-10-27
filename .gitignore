@@ -24,3 +24,7 @@ AppIcon.icns
 
 # Release script (local only)
 release.sh
+
+# Agent scratch stays local (docs/programs/README.md)
+.superpowers/
+docs/superpowers/
