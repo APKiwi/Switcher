@@ -50,7 +50,7 @@ fresh() {
 }
 # put <path> <printf format> [args]: write a file, creating its folder.
 put() { p=$1; shift; mkdir -p "$(dirname -- "$p")"; printf "$@" > "$p"; }
-tracker() { put "$1" '# x\n\n## Goal\n\nDone means done.\n\n## Milestones\n\n| M | Status |\n\n## Next step\n\nStart.\n'; }
+tracker() { put "$1" '# x\n\n## Goal\n\nDone means done.\n\n## Milestones\n\n| M | Status |\n| --- | --- |\n%s\n\n## Next step\n\nStart.\n' "${2:-}"; }
 pad_to() { # file, exact byte size
   cur=$(wc -c < "$1" | tr -d ' ')
   awk -v n="$(( $2 - cur - 1 ))" 'BEGIN { s = "x"; while (length(s) < n) s = s s; print substr(s, 1, n) }' >> "$1"
@@ -188,6 +188,96 @@ fresh; tracker docs/programs/x.md; put docs/programs/x-design.md '# x design\n';
 git rm -q docs/programs/x.md; run
 check staged_tracker_delete_orphaning_design_fails 1 "$rc"
 
+echo "== milestone Status words =="
+fresh; tracker docs/programs/x.md '| M1 | Planned |
+| M2 | Active |
+| M3 | Blocked |
+| M4 | Owner gate |
+| M5 | Done |'; git add -A; run
+check staged_new_tracker_five_status_words_pass 0 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | open |'; git add -A; run
+said 'check-scratch: docs/programs/x.md: line 11'
+said '"open"'
+said 'Planned, Active, Blocked, Owner gate, Done'
+said 'docs/programs/README.md'
+check staged_new_tracker_legacy_status_fails 1 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | open |
+| M2 | pending |'; commit legacy
+printf '\nContinue with the next milestone.\n' >> docs/programs/x.md; git add -A; run
+check staged_next_step_edit_leaves_legacy_rows_legal 0 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | open |
+| M2 | pending |'; commit legacy
+tracker docs/programs/x.md '| M1 | Shipped |
+| M2 | pending |'; git add -A; run
+said '"Shipped"'
+if grep -qF '"pending"' "$OUTFILE"; then rc="$rc, checked untouched row"; fi
+check staged_changed_status_shipped_fails 1 "$rc"
+tracker docs/programs/x.md '| M1 | Done |
+| M2 | pending |'; git add -A; run
+check staged_changed_status_done_leaves_legacy_row_legal 0 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | open |'; commit legacy
+tracker docs/programs/x.md '| M1 renamed | open |'; git add -A; run
+said '"open"'
+check staged_changed_row_with_legacy_status_fails 1 "$rc"
+
+# Exact line identity allows a moved or duplicated old row, as it does for scratch references.
+fresh; tracker docs/programs/x.md '| M1 | open |
+| M2 | pending |'; commit legacy
+tracker docs/programs/x.md '| M2 | pending |
+| M1 | open |
+| M1 | open |'; git add -A; run
+check staged_repositioned_legacy_status_rows_pass 0 "$rc"
+
+fresh; tracker docs/programs/old.md '| M1 | open |'; commit legacy
+tracker docs/programs/new.md '| M1 | open |'; git add -A; run
+said 'docs/programs/new.md: line 11'
+check staged_legacy_row_copied_to_new_tracker_fails 1 "$rc"
+
+fresh; put docs/programs/x.md '# x\n\n## Goal\n\ng\n\n## Milestones\n\n| Issue | Owner gate | sTaTuS | Milestone |\n| --- | --- | --- | --- |\n| #1 | none | Active | M1 |\n\n## Next step\n\nContinue.\n'
+git add -A; run
+check staged_reordered_status_header_valid_word_passes 0 "$rc"
+put docs/programs/x.md '# x\n\n## Goal\n\ng\n\n## Milestones\n\n| Issue | Owner gate | sTaTuS | Milestone |\n| --- | --- | --- | --- |\n| #1 | Done | Shipped | M1 |\n\n## Next step\n\nContinue.\n'
+git add -A; run; said '"Shipped"'
+check staged_reordered_status_header_invalid_word_fails 1 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | done |
+| M2 | |'; git add -A; run
+said 'line 11'; said '"done"'; said 'line 12'; said '""'
+check staged_status_is_exact_and_not_empty 1 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | Owner gate |'; to_crlf docs/programs/x.md; git add -A; run
+check staged_crlf_status_word_passes 0 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | open |
+| M2 | pending |'; git add -A; run --tree
+said 'warning'; said 'docs/programs/x.md: line 11'; said '"open"'
+said 'docs/programs/x.md: line 12'; said '"pending"'
+check tree_legacy_status_rows_warn_without_failing 0 "$rc"
+printf '\n## Log\n\nOld history.\n' >> docs/programs/x.md; run --tree
+said 'warning'; said 'heading "## Log"'
+check tree_status_warnings_preserve_other_failures 1 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | Planned |'
+printf '\n```md\n## Milestones\n\n| M | Status |\n| --- | --- |\n| Example | open |\n```\n\n~~~md\n## Milestones\n\n| M | Status |\n| --- | --- |\n| Example | pending |\n~~~\n' >> docs/programs/x.md
+git add -A; run
+check staged_fenced_milestone_status_examples_ignored 0 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | Planned |'
+printf '\n| M | Status |\n| --- | --- |\n| Next step example | open |\n' >> docs/programs/x.md; git add -A; run
+check staged_status_table_outside_milestones_ignored 0 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | Planned |'
+tracker docs/programs/x-design.md '| Example | open |'
+tracker docs/programs/README.md '| Example | pending |'; git add -A; run
+check staged_design_and_readme_status_tables_ignored 0 "$rc"
+run --tree
+if [ -s "$OUTFILE" ]; then rc="$rc, unexpected output"; fi
+check tree_design_and_readme_status_tables_ignored 0 "$rc"
+
 echo "== staged merge mode =="
 # Each case branches before main's changes, then leaves a real merge pending in the index.
 merge_main() {
@@ -257,6 +347,32 @@ git checkout -q topic; put topic.txt 'Topic work.\n'; commit topic
 git merge --no-ff --no-commit main extra >"$TMPROOT/merge-out" 2>&1
 run
 check staged_octopus_merge_inherited_content_passes 0 "$rc"
+
+fresh; git branch -m main; git branch topic
+tracker docs/programs/x.md '| M1 | open |'; commit legacy; merge_main; run
+check staged_merge_legacy_row_from_other_parent_passes 0 "$rc"
+tracker docs/programs/x.md '| M1 | Shipped |'; git add -A; run
+said '"Shipped"'
+check staged_merge_row_absent_from_every_parent_fails 1 "$rc"
+tracker docs/programs/x.md '| M1 | Done |'; git add -A; run
+check staged_merge_changed_row_to_done_passes 0 "$rc"
+
+fresh; tracker docs/programs/x.md '| M1 | open |'; commit legacy
+git branch -m main; git checkout -qb topic
+tracker docs/programs/x.md '| M1 | Done |'; commit topic
+git checkout -q main; put main.txt 'Main work.\n'; commit main
+git merge --no-ff --no-commit topic >"$TMPROOT/merge-out" 2>&1
+tracker docs/programs/x.md '| M1 | open |
+| M1 | open |'; git add -A; run
+check staged_merge_legacy_row_from_head_passes 0 "$rc"
+
+fresh; git branch -m main; git branch topic; git branch extra
+put main.txt 'Main work.\n'; commit main
+git checkout -q extra; tracker docs/programs/x.md '| M1 | open |'; commit extra
+git checkout -q topic; put topic.txt 'Topic work.\n'; commit topic
+git merge --no-ff --no-commit main extra >"$TMPROOT/merge-out" 2>&1
+run
+check staged_octopus_merge_legacy_status_from_last_parent_passes 0 "$rc"
 
 echo "== self exclusion =="
 fresh; mkdir -p Scripts/tests; cp "$SCRIPT" Scripts/check-scratch.sh; cp "$here/check-scratch.test.sh" Scripts/tests/check-scratch.test.sh

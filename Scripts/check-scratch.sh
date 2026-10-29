@@ -10,7 +10,8 @@
 #       (a segment with <, * or YYYY) and the upstream obra/superpowers URL pass.
 #   R3  no new doc under docs/ named by date, except a record under docs/verification/ (staged only)
 #   R4  a tracker docs/programs/<name>.md is at most 8192 bytes, uses only the six fixed ## headings
-#       outside fenced blocks and has Goal, Milestones and Next step
+#       outside fenced blocks and has Goal, Milestones and Next step. New Milestones rows use exactly
+#       Planned, Active, Blocked, Owner gate or Done in the Status column. Tree mode warns on old words.
 #   R5  a design file docs/programs/<name>-design.md is at most 32768 bytes and has its tracker
 #
 # Sizes count bytes without CR, so a CRLF checkout measures the same as an LF one.
@@ -24,6 +25,7 @@
 #
 # During a merge, R2 ignores lines already in the same file in any parent, and R3 ignores paths
 # already in any parent. Merge parents include HEAD and every entry in MERGE_HEAD.
+# R4 Status checks ignore exact rows already in the same file in HEAD or any merge parent.
 #
 # R2 skips this script, its test, and every pathspec listed in .scratch-check-ignore (one per line,
 # blank lines and # comments ignored), for content managed elsewhere such as third-party text.
@@ -180,6 +182,55 @@ END {
   for (h in need) if (!(h in seen)) printf "check-scratch: %s: tracker has no \"## %s\" section\n", file, h
 }'
 
+# Parent lines are marked P:, then current lines +:. Keep full parent lines for identity checks,
+# and parse only the current Milestones table, outside fences. Status is found by its header name.
+statuses='
+BEGIN {
+  n = split("Planned|Active|Blocked|Owner gate|Done", w, "|")
+  for (i = 1; i <= n; i++) valid[w[i]] = 1
+}
+function trim(s) {
+  sub(/^[ \t]+/, "", s)
+  sub(/[ \t]+$/, "", s)
+  return s
+}
+substr($0, 1, 2) == "P:" { existing[substr($0, 3)] = 1; next }
+{
+  raw = substr($0, 3)
+  line++
+  t = raw
+  sub(/\r$/, "", t)
+  sub(/^ ? ? ?/, "", t)
+  m = substr(t, 1, 3)
+  if (m == "```" || m == "~~~") {
+    if (fence == "") { fence = m; next }
+    if (m == fence) { fence = ""; next }
+  }
+  if (fence != "") next
+  if (t ~ /^## /) {
+    milestones = trim(substr(t, 4)) == "Milestones"
+    column = 0
+    next
+  }
+  if (!milestones) next
+  t = trim(t)
+  if (t == "") next
+  if (!index(t, "|")) { column = 0; next }
+  if (t ~ /^[-:| \t]+$/) next
+  sub(/^\|/, "", t)
+  sub(/\|$/, "", t)
+  n = split(t, cells, "|")
+  if (!column) {
+    for (i = 1; i <= n; i++) if (tolower(trim(cells[i])) == "status") column = i
+    next
+  }
+  value = trim(cells[column])
+  if (value in valid) next
+  if (mode != "--tree" && raw in existing) next
+  prefix = mode == "--tree" ? "check-scratch: warning" : "check-scratch"
+  printf "%s: %s: line %d has Status \"%s\", expected Planned, Active, Blocked, Owner gate, Done. See docs/programs/README.md for meanings.\n", prefix, file, line, value
+}'
+
 # R4 and R5 for one docs/programs file. $1 path, $2 command that prints its content, $3 command that
 # succeeds when a given path exists in the same tree or index.
 check_program_file() {
@@ -200,6 +251,20 @@ check_program_file() {
       if [ "$size" -gt "$tracker_cap" ]; then report "$f" "tracker is $size bytes, over the $tracker_cap byte cap"; fi
       out=$($show "$f" | awk -v file="$f" "$headings")
       if [ -n "$out" ]; then printf '%s\n' "$out" >&2; fail=1; fi
+      out=$({
+        if [ "$mode" != --tree ]; then
+          for parent in ${merge_parents:-HEAD}; do
+            if g cat-file -e "$parent:$f" 2>/dev/null; then
+              g show "$parent:$f" | sed 's/^/P:/'
+            fi
+          done
+        fi
+        $show "$f" | sed 's/^/+:/'
+      } | awk -v file="$f" -v mode="$mode" "$statuses")
+      if [ -n "$out" ]; then
+        printf '%s\n' "$out" >&2
+        if [ "$mode" != --tree ]; then fail=1; fi
+      fi
       ;;
   esac
 }

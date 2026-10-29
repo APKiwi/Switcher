@@ -31,9 +31,9 @@ regenerated, such as captures, frames, contact sheets, CI downloads and logs, go
 `/tmp/<repo>-<key>/` with mode 0700, never in the work folder.
 
 The staged check treats merge parents as existing content. A dated doc is new only when none of the
-parents has that path. A scratch reference is new only when its exact line is absent from that file
-in every parent. This includes the first parent and all heads of an octopus merge. Whole-tree checks
-still inspect all tracked content.
+parents has that path. A scratch reference or milestone row is new only when its exact line is absent
+from that file in every parent. This includes the first parent and all heads of an octopus merge.
+Every row in a new file is new. Whole-tree checks still inspect all tracked content.
 
 ## Tracker shape
 
@@ -42,8 +42,15 @@ Next step are required.
 
 - **Goal**: what done means, in a few lines.
 - **Links**: the roadmap issue by full URL, and the living docs this program changes.
-- **Milestones**: a table of milestone, status, issue and owner gate. Status is current state only. The
-  issue closes from its landing commit, so the table carries no sha or date history.
+- **Milestones**: a table of milestone, status, issue and owner gate. Status is exactly one of these
+  five words, with no sha or date history:
+  - `Planned`: not started.
+  - `Active`: being worked or built, including review or work not yet landed everywhere it must.
+  - `Blocked`: waiting on something outside the owner's decision, such as another program, a release,
+    another chat or a third party's answer.
+  - `Owner gate`: waiting on the owner's look acceptance, playtest, approval or held merge. Name the
+    gate in the Owner gate column.
+  - `Done`: landed, with its issue closed from the landing commit.
 - **Decisions in force**: the owner rulings and design calls the remaining milestones depend on, with
   stable ids. A ruling already reflected in a living doc is removed from here.
 - **Open questions and owner gates**: what is waiting on a decision, and whose.
@@ -51,6 +58,12 @@ Next step are required.
 
 A tracker never holds logs, per-task progress, review rounds, outcome narratives, evidence or routing
 lessons.
+
+Nuance such as a held merge, an environment rollout or "delivered by the engine, game adoption pending"
+goes in the Owner gate column or Next step, never in Status. A chat converts a tracker's rows to the
+five words the next time it edits that tracker. The staged check enforces this only on rows a commit
+adds or changes, using the exact-line parent rule above. Whole-tree checks warn about each legacy
+Status row without failing because of it.
 
 ## Caps
 
@@ -98,7 +111,7 @@ another repo are linked by full issue URL, never the short `owner/repo#N` form.
 
 | Milestone | Status | Issue | Owner gate |
 | --- | --- | --- | --- |
-| M1 <name> | open | <full issue URL> | <gate or none> |
+| M1 <name> | Planned | <full issue URL> | <gate or none> |
 
 ## Decisions in force
 
