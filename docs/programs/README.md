@@ -4,24 +4,38 @@ scripts/check-scratch.sh. Do not hand-edit a copy. Change it in game-template an
 -->
 # Programs
 
-How this repo keeps the state of long-running work. Three tiers, each with one job.
-`scripts/check-scratch.sh` enforces the parts a machine can check, from the pre-commit hook and CI.
+Program state lives in the owner's program store, outside this repository. A program spans more than
+one landing. Read it on demand with gauge:program_get using its program id, or find it with
+gauge:program_list filtered by this repository. Create and change it with gauge:program_create and
+gauge:program_update. Do not create a repo tracker or design file. Remaining design lives in the
+program's final Design section.
 
-## The three tiers
+A resumed chat whose draft names docs/programs/<name>.md must read gauge:program_get with id <name>
+before continuing. A branch-only or newer branch tracker stays on that branch as recovery material.
+The merge check refuses it. Apply its still-current changes through the program tools against the
+current revision and remove the repo file from the proposed merge. Do not replace newer store state
+from an old branch.
+
+At a milestone's start set Active. After it lands update Done with evidence. Record owner
+gates/questions when they arise. A chat plan describes work inside the milestone and links the
+program id, never restating milestones. At completion move decisions still in force into living docs
+and close with gauge:program_close. Hosted runners and other machines do not read the store. A chat
+there hands program changes to a Mac chat.
+
+Only README.md may be committed under docs/programs/. The check enforces this in the resulting index
+and CI, including inherited merge files. Scratch-reference and dated-doc rules keep their existing
+parent comparisons.
+
+## Living docs and work files
 
 **Living docs** are the current truth about the system. They are named by topic, never by date, and
 describe the system as it is. Superseded text is rewritten or deleted, because git history is the
 archive. A reason or gotcha sits next to the behaviour it explains and stands alone, with no link into
 scratch. A behaviour change and its doc update land in the same commit.
 
-**Program trackers** hold the state of a long-running program until it is done. A program is work that
-spans more than one landing, so more than one plan, session or milestone. A single-landing feature
-needs no tracker. Its issue and its plan are enough. Each open program has one tracker at
-`docs/programs/<name>.md`, kebab-case.
-
 **Work files** are specs, plans, subagent ledgers, briefs, reports, receipts and brainstorm output.
 They live outside the repository in the work folder `~/.local/share/agent-work/<repo>/<key>/`, where
-`<key>` is the program's tracker name or the branch topic, so a reboot, a worktree removal or
+`<key>` is the program id or the branch topic, so a reboot, a worktree removal or
 `git clean` cannot take them. They stay while the work or program runs and are removed when it ends.
 They are never committed, and no tracked file names a file inside them. `docs/superpowers/` and
 `.superpowers/` stay ignored scratch roots, and a worktree's `.superpowers/sdd` is a link into the work
@@ -30,98 +44,7 @@ program milestone is named `<program>-m<N>-<topic>` so a new chat finds it by na
 regenerated, such as captures, frames, contact sheets, CI downloads and logs, goes in
 `/tmp/<repo>-<key>/` with mode 0700, never in the work folder.
 
-The staged check treats merge parents as existing content. A dated doc is new only when none of the
-parents has that path. A scratch reference or milestone row is new only when its exact line is absent
-from that file in every parent. This includes the first parent and all heads of an octopus merge.
-Every row in a new file is new. Whole-tree checks still inspect all tracked content.
-
-## Tracker shape
-
-A tracker has a `#` title and these `##` sections, in this order, and no others. Goal, Milestones and
-Next step are required.
-
-- **Goal**: what done means, in a few lines.
-- **Links**: the roadmap issue by full URL, and the living docs this program changes.
-- **Milestones**: a table of milestone, status, issue and owner gate. Status is exactly one of these
-  five words, with no sha or date history:
-  - `Planned`: not started.
-  - `Active`: being worked or built, including review or work not yet landed everywhere it must.
-  - `Blocked`: waiting on something outside the owner's decision, such as another program, a release,
-    another chat or a third party's answer.
-  - `Owner gate`: waiting on the owner's look acceptance, playtest, approval or held merge. Name the
-    gate in the Owner gate column.
-  - `Done`: landed, with its issue closed from the landing commit.
-- **Decisions in force**: the owner rulings and design calls the remaining milestones depend on, with
-  stable ids. A ruling already reflected in a living doc is removed from here.
-- **Open questions and owner gates**: what is waiting on a decision, and whose.
-- **Next step**: one short paragraph a new chat can act on.
-
-A tracker never holds logs, per-task progress, review rounds, outcome narratives, evidence or routing
-lessons.
-
-Nuance such as a held merge, an environment rollout or "delivered by the engine, game adoption pending"
-goes in the Owner gate column or Next step, never in Status. A chat converts a tracker's rows to the
-five words the next time it edits that tracker. The staged check enforces this only on rows a commit
-adds or changes, using the exact-line parent rule above. Whole-tree checks warn about each legacy
-Status row without failing because of it.
-
-## Caps
-
-A tracker is at most 8192 bytes. A design file is at most 32768 bytes. A tracker that outgrows its cap
-is carrying history. Cut it back to current state rather than raising the cap.
-
-## Design file
-
-A program may keep the approved design of milestones not built yet in `docs/programs/<name>-design.md`,
-next to its tracker. When a milestone lands, the part of the design it built is rewritten as current
-truth into the living docs and deleted from the design file, so the file shrinks to nothing as the
-program completes. A design file without its tracker fails the check.
-
-## Lifecycle
-
-1. Created when the program is planned, with its roadmap issue linking to it.
-2. Updated in the same commit as each milestone landing.
-3. At completion, the closing commit moves every decision still in force into the living docs, deletes
-   the tracker and its design file, and closes the roadmap issue.
-
-A milestone, or any branch that changes documented behaviour, is done only when the living docs describe
-the new behaviour, every ruling, reason and gotcha from its plan that still applies is in a living doc or
-the tracker's decisions in force, and the tracker is updated in the same commit.
-
-## Cross-repo programs
-
-A program that spans repos has its tracker in the repo that drives it, usually the game. Milestones in
-another repo are linked by full issue URL, never the short `owner/repo#N` form.
-
-## Blank tracker
-
-```markdown
-# <Program name>
-
-## Goal
-
-<What done means, in a few lines.>
-
-## Links
-
-- Roadmap: <full issue URL>
-- Docs changed: <living doc paths>
-
-## Milestones
-
-| Milestone | Status | Issue | Owner gate |
-| --- | --- | --- | --- |
-| M1 <name> | Planned | <full issue URL> | <gate or none> |
-
-## Decisions in force
-
-- <ID>: <ruling or design call>
-
-## Open questions and owner gates
-
-- <question, and who decides>
-
-## Next step
-
-<One short paragraph a new chat can act on.>
-```
+The staged check treats merge parents as existing content for scratch references and dated docs.
+A dated doc is new only when none of the parents has that path. A scratch reference is new only when
+its exact line is absent from that file in every parent. This includes the first parent and all heads
+of an octopus merge. Whole-tree checks still inspect all tracked content.

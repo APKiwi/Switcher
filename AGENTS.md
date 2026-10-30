@@ -115,10 +115,9 @@ instruction-budget check. Do not bypass a failing hook.
 - Docs describe the system as it is today. Update them in the same commit as the behaviour they describe,
   with each reason or gotcha next to the behaviour it explains. Delete superseded text, git history is the
   archive. Never name a doc by date.
-- A long-running program, meaning work that spans more than one landing, has one tracker at
-  `docs/programs/<name>.md` in the shape [docs/programs/README.md](docs/programs/README.md) sets. Update it
-  in the same commit as each milestone. When the program is done, move every decision still in force into
-  the docs and delete the tracker.
+- Long-running program state lives in the owner's program store. Read it with gauge:program_get,
+  using the old tracker basename as its id when resuming. Follow docs/programs/README.md. Never commit
+  program state under docs/programs/.
 - Specs, plans, subagent ledgers and brainstorm output under `docs/superpowers/` and `.superpowers/` are
   local scratch. They are never committed, and no tracked file names a file inside them, whatever a skill
   says. `Scripts/check-scratch.sh` enforces this.
