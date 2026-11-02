@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # The package has no SwiftPM dependencies, so the workflows' actions are the
+  # only thing to keep current. Add a swift entry when that changes.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]

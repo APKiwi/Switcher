@@ -20,6 +20,14 @@ The runner fails if no checks match. Finish with the unfiltered command above.
 Pure logic belongs in `SwitcherKernels`. Measured window behavior follows the implementation, evidence, and
 tests triad used by `WindowFilter` and `MinimizedState`. Keep the scenario lists and executable checks aligned.
 
+## CI and dependency updates
+
+CI runs the instruction harness checks, the build and the kernel checks on every push and pull request.
+`scratch-check.yml` enforces the scratch rule. Dependabot alerts and security updates are on in the repository
+settings. `.github/dependabot.yml` sends one grouped pull request a month for the GitHub Actions the workflows use,
+the only dependencies the package has. A SwiftPM dependency needs a `swift` entry there and a committed
+`Package.resolved`, which the dependency graph reads.
+
 ## Diagnostic list mode
 
 Build and run the computed application list without registering hotkeys:
