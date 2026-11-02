@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import SwitcherKernels
 
 /// Pins the focus-intent rules against the probe run they came from (times in
@@ -40,6 +41,9 @@ enum FocusIntentTests {
         // D. Input mapping
         Check.run("testReturnAndEnterAreConfirmKeys", testReturnAndEnterAreConfirmKeys)
         Check.run("testModifierChordsAreShortcuts", testModifierChordsAreShortcuts)
+        for (name, keyCode) in functionKeys {
+            Check.run("testBareFunctionKeyIsAShortcut(\(name))") { testBareFunctionKeyIsAShortcut(keyCode) }
+        }
         Check.run("testOnlyCommandControlOptionReleasesCount", testOnlyCommandControlOptionReleasesCount)
         Check.run("testWhichInputsCancelARevert", testWhichInputsCancelARevert)
         // E. Exemptions
@@ -241,6 +245,21 @@ enum FocusIntentTests {
         Check.equal(FocusIntent.keyKind(keyCode: q, modifiers: [.option, .shift]), .shortcut)
         Check.equal(FocusIntent.keyKind(keyCode: q, modifiers: [.shift]), .typing)
         Check.equal(FocusIntent.keyKind(keyCode: q, modifiers: []), .typing)
+    }
+
+    /// Carbon's own key codes, so the list does not come from the kernel.
+    private static let functionKeys: [(String, Int)] = [
+        ("F1", kVK_F1), ("F2", kVK_F2), ("F3", kVK_F3), ("F4", kVK_F4), ("F5", kVK_F5),
+        ("F6", kVK_F6), ("F7", kVK_F7), ("F8", kVK_F8), ("F9", kVK_F9), ("F10", kVK_F10),
+        ("F11", kVK_F11), ("F12", kVK_F12), ("F13", kVK_F13), ("F14", kVK_F14), ("F15", kVK_F15),
+        ("F16", kVK_F16), ("F17", kVK_F17), ("F18", kVK_F18), ("F19", kVK_F19), ("F20", kVK_F20),
+    ]
+
+    /// Issue #4: an iTerm2 hotkey window or a launcher on a bare F12 read as
+    /// typing, so the app it brought forward was sent back.
+    static func testBareFunctionKeyIsAShortcut(_ keyCode: Int) {
+        Check.equal(FocusIntent.keyKind(keyCode: UInt16(keyCode), modifiers: []), .shortcut)
+        Check.equal(FocusIntent.keyKind(keyCode: UInt16(keyCode), modifiers: [.shift]), .shortcut)
     }
 
     static func testOnlyCommandControlOptionReleasesCount() {
