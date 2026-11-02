@@ -145,13 +145,15 @@ public enum FocusIntent {
     public static func keyKind(keyCode: UInt16, modifiers: Modifiers) -> InputKind {
         if keyCode == 36 || keyCode == 76 { return .confirmKey }
         if (123...126).contains(keyCode), modifiers == [.control] { return .spaceNavigation }
-        if functionKeys.contains(keyCode) { return .shortcut }
+        if isFunctionKey(keyCode) { return .shortcut }
         return modifiers.isDisjoint(with: .switching) ? .typing : .shortcut
     }
 
     /// F1 to F20 (`kVK_F1` to `kVK_F20`). They almost never carry text, so a
     /// bare one counts as a hotkey (`FocusIntentSpecs.md`, Function keys).
-    static let functionKeys: Set<UInt16> = [
+    public static func isFunctionKey(_ keyCode: UInt16) -> Bool { functionKeys.contains(keyCode) }
+
+    private static let functionKeys: Set<UInt16> = [
         122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
     ]
 

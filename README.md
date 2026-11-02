@@ -115,7 +115,7 @@ defaults delete kiwi.ap.switcher grayscaleIcons             # revert
 
 ## Focus guard
 
-With **Stop apps stealing focus** on, Switcher watches for the input that can switch apps: clicks, Return, shortcuts, modifier releases and desktop gestures. A desktop change caused by another app is not permission to take focus. It classifies key presses and never records them. When an app comes forward and none of that asked for it, Switcher sends you back to where you were after a short decision delay. It remembers your focused window and checks that the same window is visible after restoring it. Switch to the app if you wanted it after all.
+With **Stop apps stealing focus** on, Switcher watches for the input that can switch apps: clicks, Return, shortcuts, function keys, modifier releases and desktop gestures. A desktop change caused by another app is not permission to take focus. It classifies key presses and never records them. When an app comes forward and none of that asked for it, Switcher sends you back to where you were after a short decision delay. It remembers your focused window and checks that the same window is visible after restoring it. Switch to the app if you wanted it after all.
 
 An app you launched may take up to a minute to come forward while you wait. If you go back to work elsewhere first, its late arrival counts as a steal.
 

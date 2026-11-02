@@ -83,11 +83,14 @@ and hotkey windows bind them, such as an iTerm2 hotkey window on F12. The cost i
 500 ms of a function key press is let through, and a press while a revert is pending cancels it. A Mac keyboard's
 top row sends media keys unless fn is held or Standard function keys is on, so those presses never reach this rule.
 
-The rule covers only presses the `NSEvent` monitors see. A key another app registers as a Carbon hotkey
-(`RegisterEventHotKey`) goes to that app as a hotkey event. The first probe run saw an installed Switcher's
-hold-to-switch only by its Command release, never by its Tab presses. A chord hotkey still leaves that release, but a
-bare function key hotkey leaves no input at all, so the app it brings forward still reads as a steal. Which
-launchers register their hotkeys this way was not checked.
+A key another app registers as a Carbon hotkey (`RegisterEventHotKey`) goes to that app as a hotkey event, so the
+`NSEvent` monitors never see it. The first probe run saw an installed Switcher's hold-to-switch only by its Command
+release, never by its Tab presses. A chord hotkey still leaves that release, but a bare function key hotkey would
+leave no input at all. `FocusFunctionKeyMonitor` therefore watches keyDown at a passive session tap and reports only
+F1 to F20, dropping every other key unread. The key monitor skips function keys while that tap runs, so a press is
+recorded once. The tap is created only when `CGPreflightListenEventAccess()` is true, because creating a keyboard
+tap without listen access raises the Input Monitoring prompt. Without it, function keys fall back to the monitor and
+bare function key hotkeys go unseen. The probe logs which case applies.
 
 ## Not yet measured
 
@@ -95,8 +98,10 @@ launchers register their hotkeys this way was not checked.
   that accepted a Space-change notice as intent let a cross-Space steal justify itself. Gesture timestamps now
   provide the input evidence. A refused or disabled gesture tap retains the fail-open Space behavior.
 - Launches slower than a few seconds, with and without the user moving on.
-- Whether a bare function key that another app registers as a Carbon hotkey reaches the global key monitor, and
-  whether a passive session tap sees it. The hold-to-switch evidence above says the monitor does not.
+- Whether the session tap sees a bare function key that another app registers as a Carbon hotkey, and whether a
+  keyDown tap is created with Accessibility alone. With the installed guard off, bind a bare F13 hotkey in another
+  app, run the probe, and press it. `function key observer: available` and `intended: <app>, shortcut ... before`
+  answer both.
 - Live admin prompts (`sfltool` background item prompts). The exemption rests on the `Info.plist` evidence above,
   not on a prompt seen by the probe.
 - Whether secure input is already on 150 ms after a prompt takes focus with its password field focused, for

@@ -44,6 +44,7 @@ enum FocusIntentTests {
         for (name, keyCode) in functionKeys {
             Check.run("testBareFunctionKeyIsAShortcut(\(name))") { testBareFunctionKeyIsAShortcut(keyCode) }
         }
+        Check.run("testOnlyF1ToF20AreFunctionKeys", testOnlyF1ToF20AreFunctionKeys)
         Check.run("testOnlyCommandControlOptionReleasesCount", testOnlyCommandControlOptionReleasesCount)
         Check.run("testWhichInputsCancelARevert", testWhichInputsCancelARevert)
         // E. Exemptions
@@ -260,6 +261,13 @@ enum FocusIntentTests {
     static func testBareFunctionKeyIsAShortcut(_ keyCode: Int) {
         Check.equal(FocusIntent.keyKind(keyCode: UInt16(keyCode), modifiers: []), .shortcut)
         Check.equal(FocusIntent.keyKind(keyCode: UInt16(keyCode), modifiers: [.shift]), .shortcut)
+    }
+
+    /// The session tap reports only these, so a gap would leave a hotkey unseen
+    /// and an extra key would report typing.
+    static func testOnlyF1ToF20AreFunctionKeys() {
+        let reported = Set((0...UInt16(127)).filter(FocusIntent.isFunctionKey).map(Int.init))
+        Check.equal(reported, Set(functionKeys.map(\.1)))
     }
 
     static func testOnlyCommandControlOptionReleasesCount() {
