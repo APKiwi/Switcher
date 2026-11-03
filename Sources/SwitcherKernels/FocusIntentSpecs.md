@@ -92,16 +92,20 @@ recorded once. The tap is created only when `CGPreflightListenEventAccess()` is 
 tap without listen access raises the Input Monitoring prompt. Without it, function keys fall back to the monitor and
 bare function key hotkeys go unseen. The probe logs which case applies.
 
+Probe run on macOS 27.2 (26B123), 2026-11-03, with Accessibility granted: the preflight passed and the tap was
+created (`function key observer: available`). It recorded one bare function key press, a shortcut with no modifier
+press before it or release after it. No app came forward from that press, and the run had no steals. Whether an
+Input Monitoring row appeared was not checked.
+
 ## Not yet measured
 
 - Whether desktop gesture envelopes reach the passive tap on each supported macOS version. The earlier rule
   that accepted a Space-change notice as intent let a cross-Space steal justify itself. Gesture timestamps now
   provide the input evidence. A refused or disabled gesture tap retains the fail-open Space behavior.
 - Launches slower than a few seconds, with and without the user moving on.
-- Whether the session tap sees a bare function key that another app registers as a Carbon hotkey, and whether a
-  keyDown tap is created with Accessibility alone. With the installed guard off, bind a bare F13 hotkey in another
-  app, run the probe, and press it. `function key observer: available` and `intended: <app>, shortcut ... before`
-  answer both.
+- Whether the session tap sees a bare function key that another app registers as a Carbon hotkey. With the
+  installed guard off, bind a bare F13 hotkey that activates another app, run the probe, and press it.
+  `intended: <app>, shortcut ... before` answers it.
 - Live admin prompts (`sfltool` background item prompts). The exemption rests on the `Info.plist` evidence above,
   not on a prompt seen by the probe.
 - Whether secure input is already on 150 ms after a prompt takes focus with its password field focused, for
