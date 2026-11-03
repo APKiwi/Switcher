@@ -104,9 +104,11 @@ so the panel cannot refill behind the user's actions. An expanded session remain
 the key monitor is blind, so a launch's Return would go unseen and the launch would be reverted.
 
 Global and local `NSEvent` monitors feed input to `FocusIntent`, which waits at least 150 ms for late
-input before judging an activation. Clicks, Return or Enter, modifier shortcuts and releases, and Switcher's
-panel actions count as input. A separate passive `FocusGestureMonitor` observes gesture envelopes at the
-session tap, including desktop swipes. Gestures and Control+arrow desktop navigation have two seconds for their animation to finish. A Space-change
+input before judging an activation. Clicks, Return or Enter, modifier shortcuts, function keys and modifier
+releases, and Switcher's panel actions count as input. Another app's Carbon hotkey never reaches the monitors.
+A chord leaves its modifier release, and `FocusFunctionKeyMonitor` reports bare F1 to F20 presses from a passive
+session tap, created only when listen access preflights. A separate passive `FocusGestureMonitor` observes
+gesture envelopes at the session tap, including desktop swipes. Gestures and Control+arrow desktop navigation have two seconds for their animation to finish. A Space-change
 notification alone never proves intent, since an app taking focus can cause it. If the gesture tap is unavailable,
 Space changes fail open. No event is swallowed or synthesized.
 

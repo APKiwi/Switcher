@@ -23,7 +23,8 @@ public enum FocusIntent {
         case click
         /// Return or keypad Enter, which ends a launcher search or a terminal `open`.
         case confirmKey
-        /// A key with Command, Control or Option held: app hotkeys, Cmd+Q, Cmd+H.
+        /// A key with Command, Control or Option held (app hotkeys, Cmd+Q, Cmd+H),
+        /// or a bare function key, which launchers and hotkey windows bind.
         case shortcut
         /// Command, Control or Option released. A hold-to-switch chord ends here,
         /// and its Tab presses are hotkeys no global monitor sees.
@@ -139,13 +140,22 @@ public enum FocusIntent {
     }
 
     /// Return (36) and keypad Enter (76) confirm. A Command, Control or Option
-    /// chord is a shortcut. Control plus an arrow also covers desktop animation.
-    /// Everything else is typing.
+    /// chord or a function key is a shortcut. Control plus an arrow also covers
+    /// desktop animation. Everything else is typing.
     public static func keyKind(keyCode: UInt16, modifiers: Modifiers) -> InputKind {
         if keyCode == 36 || keyCode == 76 { return .confirmKey }
         if (123...126).contains(keyCode), modifiers == [.control] { return .spaceNavigation }
+        if isFunctionKey(keyCode) { return .shortcut }
         return modifiers.isDisjoint(with: .switching) ? .typing : .shortcut
     }
+
+    /// F1 to F20 (`kVK_F1` to `kVK_F20`). They almost never carry text, so a
+    /// bare one counts as a hotkey (`FocusIntentSpecs.md`, Function keys).
+    public static func isFunctionKey(_ keyCode: UInt16) -> Bool { functionKeys.contains(keyCode) }
+
+    private static let functionKeys: Set<UInt16> = [
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+    ]
 
     /// Only a Command, Control or Option release counts. Presses and Shift are typing.
     public static func flagsKind(from previous: Modifiers, to current: Modifiers) -> InputKind {

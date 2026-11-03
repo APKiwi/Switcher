@@ -68,6 +68,7 @@ final class FocusGuard {
     private var lastWindow: FocusWindowContext.Snapshot?
     private let windows = FocusWindowContext()
     private let gestures = FocusGestureMonitor()
+    private let functionKeys = FocusFunctionKeyMonitor()
     private var restoration = FocusRestoration()
     private var browserHandoff = BrowserHandoff()
     private var browsers = Set<String>()
@@ -144,6 +145,11 @@ final class FocusGuard {
             self.record(.gesture, at: at)
         }
         gestures.start()
+        functionKeys.onFunctionKey = { [weak self] at in
+            guard let self, self.isRunning else { return }
+            self.record(.shortcut, at: at)
+        }
+        functionKeys.start()
 
         let center = NSWorkspace.shared.notificationCenter
         observers = [
@@ -167,6 +173,7 @@ final class FocusGuard {
             },
         ]
         trace?("gesture observer: \(gestures.isAvailable ? "available" : "unavailable, Space changes fail open")")
+        trace?("function key observer: \(functionKeys.isAvailable ? "available" : "unavailable, bare function key hotkeys go unseen")")
         trace?("guarding, starting app \(describe(lastIntentional))")
         onRunningChange?(true)
     }
@@ -183,6 +190,7 @@ final class FocusGuard {
         cancelRestore(reason: "guard stopped")
         windows.stop()
         gestures.stop()
+        functionKeys.stop()
         cancelBrowserHandoff()
         linkInspection = BrowserHandoff.Inspection()
         linkWaiters.removeAll()
@@ -206,6 +214,8 @@ final class FocusGuard {
         let source = NSWorkspace.shared.frontmostApplication
         switch event.type {
         case .keyDown:
+            // The tap reports every function key press, hotkey or not.
+            if functionKeys.isAvailable, FocusIntent.isFunctionKey(event.keyCode) { return }
             let kind = FocusIntent.keyKind(keyCode: event.keyCode, modifiers: Self.modifiers(event))
             record(kind, at: event.timestamp)
             if kind == .confirmKey, let source {
