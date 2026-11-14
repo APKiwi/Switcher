@@ -78,7 +78,7 @@ Open **Preferences** (menu bar ⌘) and tick **Start at login** (macOS 13+). Or 
 | Cmd+Shift+Tab | Open switcher / previous app |
 | Option+Shift+Tab | Same, during an Option session |
 | Cmd+Opt+Tab | Show all apps (when the recent-apps limit is on) |
-| Option+backtick | Cycle the front app's windows (mirrors Cmd+backtick) |
+| Option+backtick | Cycle the front app's windows (mirrors Cmd+backtick). An app whose Info.plist sets `SwitcherForwardsOptionBacktick` to true gets the keystroke and cycles its own windows |
 | Shift | Previous app |
 | ←/→ | Navigate left/right |
 | ↑/↓ | Navigate up/down (when multiple rows) |

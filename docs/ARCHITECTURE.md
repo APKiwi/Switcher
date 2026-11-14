@@ -35,6 +35,17 @@ Option+backtick raises the backmost non-minimized Accessibility window in the fr
 synthesize Cmd+backtick because the physically held Option modifier leaks into synthetic events and prevents
 the system shortcut from matching.
 
+Accessibility lists only the current desktop's windows, so this cycling cannot reach a window on another
+desktop. An app that can bring its own windows over sets `SwitcherForwardsOptionBacktick` to true in its
+Info.plist, and `OptionBacktickRoute` sends the press to that app instead: Switcher posts Option+backtick to
+the process from a private event source, so the event carries exactly Option. An event posted to a process
+skips global hotkey matching, so it reaches the app as a plain key press and cannot fire Switcher's hotkey
+again. Checked on macOS 27.2: a registered Carbon hotkey did not fire for its own combination posted to a
+process, and that process's local key monitor received the press with exactly the posted modifiers, while
+it was an inactive accessory app. Gauge opts in, because it is an accessory app with no Dock icon or switcher entry, and its windows have
+no other way back from another desktop. Only a Boolean true opts in. The kernel checks the value's Core
+Foundation type, because an Info.plist integer 1 bridges to Bool true in Swift.
+
 The show-all shortcut is registered only while the recent-app cap is enabled. Carbon consumes a registered
 combination globally, so registering it while the feature is off would steal a shortcut that does nothing.
 The registration is idempotent and waits until the Carbon handler exists.

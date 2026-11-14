@@ -12,5 +12,6 @@ RecentAppsTests.runAll()
 FocusIntentTests.runAll()
 FocusHandoffTests.runAll()
 ActivationQueueTests.runAll()
+OptionBacktickRouteTests.runAll()
 
 exit(Check.summarize())

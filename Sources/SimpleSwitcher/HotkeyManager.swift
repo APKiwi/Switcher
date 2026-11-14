@@ -421,9 +421,17 @@ class HotkeyManager {
     /// Cmd+backtick. Bound to Option+backtick. Done through the Accessibility API
     /// (raise the backmost window) instead of synthesizing a Cmd+backtick keystroke,
     /// because the physically-held Option key leaks into a synthetic event and stops
-    /// the system shortcut from matching.
+    /// the system shortcut from matching. An app whose Info.plist opts in through
+    /// `OptionBacktickRoute` gets the keystroke itself instead.
     private func cycleFrontmostAppWindows() {
         guard let app = NSWorkspace.shared.frontmostApplication else { return }
+        let declared = app.bundleURL.flatMap {
+            Bundle(url: $0)?.object(forInfoDictionaryKey: OptionBacktickRoute.infoKey)
+        }
+        if OptionBacktickRoute.route(declared: declared) == .forwardToApp {
+            postOptionBacktick(to: app.processIdentifier)
+            return
+        }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
@@ -442,6 +450,20 @@ class HotkeyManager {
         guard visible.count > 1, let target = visible.last else { return }
         AXUIElementPerformAction(target, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
+    }
+
+    /// Posts Option+backtick straight into an app that cycles its own windows. An
+    /// event posted to a process skips global hotkey matching, so it reaches the app
+    /// as a plain key press and never fires this hotkey again. A private event source
+    /// keeps the physical modifier state out, so the event carries exactly Option.
+    private func postOptionBacktick(to pid: pid_t) {
+        let source = CGEventSource(stateID: .privateState)
+        for keyDown in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_Grave),
+                                      keyDown: keyDown) else { return }
+            event.flags = .maskAlternate
+            event.postToPid(pid)
+        }
     }
 
     /// Register the global Cmd+Opt+Tab hotkey (show the full uncapped list).
